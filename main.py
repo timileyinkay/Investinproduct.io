@@ -1,408 +1,552 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+import http.server
+import socketserver
+import webbrowser
+import threading
+import json
 from datetime import datetime, timedelta
-import numpy as np
+import random
 
-# Page configuration
-st.set_page_config(
-    page_title="Power Bank Investment Dashboard",
-    page_icon="🔋",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #1f77b4;
-    }
-    .profit-positive {
-        color: #00ff00;
-        font-weight: bold;
-    }
-    .profit-negative {
-        color: #ff0000;
-        font-weight: bold;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-class PowerBankInvestmentDashboard:
+class PowerBankDashboard:
     def __init__(self):
-        self.df = self.generate_sample_data()
-    
-    def generate_sample_data(self):
-        """Generate sample power bank investment data"""
-        np.random.seed(42)
-        
-        dates = pd.date_range(start='2023-01-01', end='2024-01-01', freq='D')
-        brands = ['Anker', 'Xiaomi', 'Samsung', 'RAVPower', 'Baseus', 'AUKEY']
-        locations = ['Mall Kiosk', 'Airport', 'University', 'Coffee Shop', 'Co-working Space']
-        
-        data = []
-        for date in dates:
-            for brand in brands:
-                for location in locations:
-                    units = np.random.randint(1, 10)
-                    cost_per_unit = np.random.uniform(20, 100)
-                    revenue_per_unit = cost_per_unit * np.random.uniform(1.1, 2.0)
-                    
-                    data.append({
-                        'date': date,
-                        'brand': brand,
-                        'location': location,
-                        'units_invested': units,
-                        'cost_per_unit': cost_per_unit,
-                        'revenue_per_unit': revenue_per_unit,
-                        'total_cost': units * cost_per_unit,
-                        'total_revenue': units * revenue_per_unit
-                    })
-        
-        df = pd.DataFrame(data)
-        df['profit'] = df['total_revenue'] - df['total_cost']
-        df['roi'] = (df['profit'] / df['total_cost']) * 100
-        return df
-    
-    def display_header(self):
-        """Display dashboard header"""
-        st.markdown('<h1 class="main-header">🔋 Power Bank Investment Dashboard</h1>', 
-                   unsafe_allow_html=True)
-        
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.write("Track and analyze your power bank rental investments")
-    
-    def display_kpis(self):
-        """Display Key Performance Indicators"""
-        st.subheader("📊 Key Performance Indicators")
-        
-        total_investment = self.df['total_cost'].sum()
-        total_revenue = self.df['total_revenue'].sum()
-        total_profit = self.df['profit'].sum()
-        avg_roi = self.df['roi'].mean()
-        total_units = self.df['units_invested'].sum()
-        
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        with col1:
-            st.metric(
-                label="Total Investment",
-                value=f"${total_investment:,.0f}",
-                delta=None
-            )
-        
-        with col2:
-            st.metric(
-                label="Total Revenue",
-                value=f"${total_revenue:,.0f}",
-                delta=f"${total_profit:,.0f}"
-            )
-        
-        with col3:
-            profit_class = "profit-positive" if total_profit >= 0 else "profit-negative"
-            st.markdown(f"""
-            <div class="metric-card">
-                <h3>Total Profit</h3>
-                <h2 class="{profit_class}">${total_profit:,.0f}</h2>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col4:
-            st.metric(
-                label="Average ROI",
-                value=f"{avg_roi:.1f}%",
-                delta=None
-            )
-        
-        with col5:
-            st.metric(
-                label="Total Units",
-                value=f"{total_units:,.0f}",
-                delta=None
-            )
-    
-    def display_filters(self):
-        """Display filters in sidebar"""
-        st.sidebar.header("🔍 Filters")
-        
-        # Date range filter
-        min_date = self.df['date'].min().date()
-        max_date = self.df['date'].max().date()
-        
-        date_range = st.sidebar.date_input(
-            "Date Range",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date
-        )
-        
-        # Brand filter
-        brands = st.sidebar.multiselect(
-            "Brands",
-            options=self.df['brand'].unique(),
-            default=self.df['brand'].unique()
-        )
-        
-        # Location filter
-        locations = st.sidebar.multiselect(
-            "Locations",
-            options=self.df['location'].unique(),
-            default=self.df['location'].unique()
-        )
-        
-        # Apply filters
-        if len(date_range) == 2:
-            start_date, end_date = date_range
-            filtered_df = self.df[
-                (self.df['date'].dt.date >= start_date) & 
-                (self.df['date'].dt.date <= end_date) &
-                (self.df['brand'].isin(brands)) &
-                (self.df['location'].isin(locations))
-            ]
-        else:
-            filtered_df = self.df
-        
-        return filtered_df
-    
-    def display_profit_trend(self, filtered_df):
-        """Display profit trend over time"""
-        st.subheader("📈 Profit Trend Over Time")
-        
-        # Aggregate data by month
-        monthly_data = filtered_df.groupby(pd.Grouper(key='date', freq='M')).agg({
-            'total_cost': 'sum',
-            'total_revenue': 'sum',
-            'profit': 'sum',
-            'units_invested': 'sum'
-        }).reset_index()
-        
-        fig = go.Figure()
-        
-        fig.add_trace(go.Scatter(
-            x=monthly_data['date'],
-            y=monthly_data['profit'],
-            mode='lines+markers',
-            name='Profit',
-            line=dict(color='#1f77b4', width=3),
-            marker=dict(size=8)
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=monthly_data['date'],
-            y=monthly_data['total_revenue'],
-            mode='lines',
-            name='Revenue',
-            line=dict(color='#2ca02c', width=2, dash='dash')
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=monthly_data['date'],
-            y=monthly_data['total_cost'],
-            mode='lines',
-            name='Cost',
-            line=dict(color='#ff7f0e', width=2, dash='dash')
-        ))
-        
-        fig.update_layout(
-            title='Monthly Profit, Revenue, and Cost Trends',
-            xaxis_title='Date',
-            yaxis_title='Amount ($)',
-            hovermode='x unified',
-            height=400
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-    
-    def display_brand_performance(self, filtered_df):
-        """Display brand performance comparison"""
-        st.subheader("🏷️ Brand Performance")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # ROI by brand
-            brand_roi = filtered_df.groupby('brand').agg({
-                'roi': 'mean',
-                'profit': 'sum',
-                'units_invested': 'sum'
-            }).reset_index()
-            
-            fig_roi = px.bar(
-                brand_roi,
-                x='brand',
-                y='roi',
-                title='Average ROI by Brand',
-                color='roi',
-                color_continuous_scale='Viridis'
-            )
-            fig_roi.update_layout(height=400)
-            st.plotly_chart(fig_roi, use_container_width=True)
-        
-        with col2:
-            # Profit by brand
-            fig_profit = px.pie(
-                filtered_df.groupby('brand')['profit'].sum().reset_index(),
-                values='profit',
-                names='brand',
-                title='Profit Distribution by Brand',
-                hole=0.4
-            )
-            fig_profit.update_layout(height=400)
-            st.plotly_chart(fig_profit, use_container_width=True)
-    
-    def display_location_analysis(self, filtered_df):
-        """Display location performance analysis"""
-        st.subheader("📍 Location Performance")
-        
-        location_performance = filtered_df.groupby('location').agg({
-            'profit': 'sum',
-            'roi': 'mean',
-            'units_invested': 'sum'
-        }).reset_index()
-        
-        fig = px.scatter(
-            location_performance,
-            x='units_invested',
-            y='profit',
-            size='roi',
-            color='location',
-            title='Location Performance: Units vs Profit (Size = ROI)',
-            hover_data=['roi']
-        )
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    def display_investment_details(self, filtered_df):
-        """Display detailed investment table"""
-        st.subheader("📋 Investment Details")
-        
-        # Show aggregated data
-        summary_df = filtered_df.groupby(['brand', 'location']).agg({
-            'units_invested': 'sum',
-            'total_cost': 'sum',
-            'total_revenue': 'sum',
-            'profit': 'sum',
-            'roi': 'mean'
-        }).reset_index()
-        
-        # Format numbers
-        summary_df['total_cost'] = summary_df['total_cost'].round(2)
-        summary_df['total_revenue'] = summary_df['total_revenue'].round(2)
-        summary_df['profit'] = summary_df['profit'].round(2)
-        summary_df['roi'] = summary_df['roi'].round(2)
-        
-        st.dataframe(
-            summary_df,
-            use_container_width=True,
-            column_config={
-                'units_invested': st.column_config.NumberColumn('Units'),
-                'total_cost': st.column_config.NumberColumn('Cost', format='$%.2f'),
-                'total_revenue': st.column_config.NumberColumn('Revenue', format='$%.2f'),
-                'profit': st.column_config.NumberColumn('Profit', format='$%.2f'),
-                'roi': st.column_config.NumberColumn('ROI', format='%.2f%%')
-            }
-        )
-    
-    def display_forecasting(self, filtered_df):
-        """Display simple forecasting"""
-        st.subheader("🔮 Revenue Forecasting")
-        
-        # Simple linear forecast based on last 3 months
-        recent_data = filtered_df.groupby(pd.Grouper(key='date', freq='M'))['total_revenue'].sum().tail(3)
-        
-        if len(recent_data) >= 2:
-            # Simple linear projection
-            x = np.arange(len(recent_data))
-            y = recent_data.values
-            slope = (y[-1] - y[0]) / (x[-1] - x[0]) if (x[-1] - x[0]) != 0 else 0
-            
-            future_months = 6
-            forecast_dates = pd.date_range(
-                start=recent_data.index[-1] + pd.DateOffset(months=1),
-                periods=future_months,
-                freq='M'
-            )
-            
-            forecast_values = [recent_data.iloc[-1] + slope * (i + 1) for i in range(future_months)]
-            
-            fig = go.Figure()
-            
-            # Historical data
-            fig.add_trace(go.Scatter(
-                x=recent_data.index,
-                y=recent_data.values,
-                mode='lines+markers',
-                name='Historical Revenue',
-                line=dict(color='#1f77b4', width=3)
-            ))
-            
-            # Forecast data
-            fig.add_trace(go.Scatter(
-                x=forecast_dates,
-                y=forecast_values,
-                mode='lines+markers',
-                name='Forecasted Revenue',
-                line=dict(color='#ff7f0e', width=3, dash='dash')
-            ))
-            
-            fig.update_layout(
-                title='6-Month Revenue Forecast',
-                xaxis_title='Date',
-                yaxis_title='Revenue ($)',
-                height=400
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("Not enough data for forecasting. Need at least 2 months of data.")
-    
-    def run(self):
-        """Run the dashboard"""
-        self.display_header()
-        
-        # Get filtered data
-        filtered_df = self.display_filters()
-        
-        # Display KPIs
-        self.display_kpis()
-        
-        # Display charts in tabs
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📈 Trends", 
-            "🏷️ Brands", 
-            "📍 Locations", 
-            "📋 Details", 
-            "🔮 Forecast"
-        ])
-        
-        with tab1:
-            self.display_profit_trend(filtered_df)
-        
-        with tab2:
-            self.display_brand_performance(filtered_df)
-        
-        with tab3:
-            self.display_location_analysis(filtered_df)
-        
-        with tab4:
-            self.display_investment_details(filtered_df)
-        
-        with tab5:
-            self.display_forecasting(filtered_df)
+        self.html_content = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Power Bank Investment Dashboard</title>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                }
 
-# Run the dashboard
+                body {
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                    padding: 20px;
+                }
+
+                .container {
+                    max-width: 1400px;
+                    margin: 0 auto;
+                }
+
+                .header {
+                    text-align: center;
+                    margin-bottom: 30px;
+                    color: white;
+                }
+
+                .header h1 {
+                    font-size: 2.5rem;
+                    margin-bottom: 10px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 15px;
+                }
+
+                .header p {
+                    font-size: 1.1rem;
+                    opacity: 0.9;
+                }
+
+                .dashboard {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                    gap: 20px;
+                    margin-bottom: 30px;
+                }
+
+                .card {
+                    background: white;
+                    border-radius: 15px;
+                    padding: 25px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                    transition: transform 0.3s ease;
+                }
+
+                .card:hover {
+                    transform: translateY(-5px);
+                }
+
+                .card h3 {
+                    color: #333;
+                    margin-bottom: 15px;
+                    font-size: 1.2rem;
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                }
+
+                .metric {
+                    font-size: 2rem;
+                    font-weight: bold;
+                    color: #4a5568;
+                }
+
+                .metric-small {
+                    font-size: 1.5rem;
+                }
+
+                .profit-positive {
+                    color: #10b981;
+                }
+
+                .profit-negative {
+                    color: #ef4444;
+                }
+
+                .charts-container {
+                    display: grid;
+                    grid-template-columns: 2fr 1fr;
+                    gap: 20px;
+                    margin-bottom: 30px;
+                }
+
+                .chart-card {
+                    background: white;
+                    border-radius: 15px;
+                    padding: 25px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                }
+
+                .chart-card h3 {
+                    color: #333;
+                    margin-bottom: 20px;
+                    font-size: 1.3rem;
+                }
+
+                .chart-container {
+                    height: 300px;
+                    position: relative;
+                }
+
+                .filters {
+                    background: white;
+                    border-radius: 15px;
+                    padding: 20px;
+                    margin-bottom: 20px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                }
+
+                .filter-row {
+                    display: flex;
+                    gap: 20px;
+                    flex-wrap: wrap;
+                }
+
+                .filter-group {
+                    flex: 1;
+                    min-width: 200px;
+                }
+
+                .filter-group label {
+                    display: block;
+                    margin-bottom: 8px;
+                    font-weight: 600;
+                    color: #4a5568;
+                }
+
+                .filter-group select, .filter-group input {
+                    width: 100%;
+                    padding: 10px;
+                    border: 2px solid #e2e8f0;
+                    border-radius: 8px;
+                    font-size: 1rem;
+                }
+
+                .table-container {
+                    background: white;
+                    border-radius: 15px;
+                    padding: 25px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                    overflow-x: auto;
+                }
+
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                }
+
+                th, td {
+                    padding: 12px 15px;
+                    text-align: left;
+                    border-bottom: 1px solid #e2e8f0;
+                }
+
+                th {
+                    background-color: #f7fafc;
+                    font-weight: 600;
+                    color: #4a5568;
+                }
+
+                tr:hover {
+                    background-color: #f7fafc;
+                }
+
+                .status-active {
+                    color: #10b981;
+                    font-weight: 600;
+                }
+
+                .status-inactive {
+                    color: #ef4444;
+                    font-weight: 600;
+                }
+
+                .icon {
+                    font-size: 1.5rem;
+                    color: #667eea;
+                }
+
+                @media (max-width: 768px) {
+                    .charts-container {
+                        grid-template-columns: 1fr;
+                    }
+                    
+                    .header h1 {
+                        font-size: 2rem;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1><i class="fas fa-charging-station"></i> Power Bank Investment Dashboard</h1>
+                    <p>Track and analyze your power bank rental investments</p>
+                </div>
+
+                <div class="filters">
+                    <div class="filter-row">
+                        <div class="filter-group">
+                            <label for="timeRange">Time Range</label>
+                            <select id="timeRange">
+                                <option value="7">Last 7 Days</option>
+                                <option value="30" selected>Last 30 Days</option>
+                                <option value="90">Last 90 Days</option>
+                                <option value="365">Last Year</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="location">Location</label>
+                            <select id="location">
+                                <option value="all">All Locations</option>
+                                <option value="mall">Shopping Mall</option>
+                                <option value="airport">Airport</option>
+                                <option value="university">University</option>
+                                <option value="cafe">Coffee Shop</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="brand">Brand</label>
+                            <select id="brand">
+                                <option value="all">All Brands</option>
+                                <option value="anker">Anker</option>
+                                <option value="xiaomi">Xiaomi</option>
+                                <option value="samsung">Samsung</option>
+                                <option value="ravpower">RAVPower</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dashboard">
+                    <div class="card">
+                        <h3><i class="fas fa-dollar-sign"></i> Total Investment</h3>
+                        <div class="metric" id="totalInvestment">$24,580</div>
+                        <p>Across all locations</p>
+                    </div>
+                    <div class="card">
+                        <h3><i class="fas fa-chart-line"></i> Total Revenue</h3>
+                        <div class="metric" id="totalRevenue">$38,420</div>
+                        <p>Last 30 days</p>
+                    </div>
+                    <div class="card">
+                        <h3><i class="fas fa-money-bill-wave"></i> Net Profit</h3>
+                        <div class="metric profit-positive" id="netProfit">$13,840</div>
+                        <p>ROI: 56.3%</p>
+                    </div>
+                    <div class="card">
+                        <h3><i class="fas fa-battery-full"></i> Active Units</h3>
+                        <div class="metric" id="activeUnits">142</div>
+                        <p>86% utilization rate</p>
+                    </div>
+                </div>
+
+                <div class="charts-container">
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-bar"></i> Revenue & Profit Trend</h3>
+                        <div class="chart-container">
+                            <canvas id="revenueChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-pie"></i> Revenue by Location</h3>
+                        <div class="chart-container">
+                            <canvas id="locationChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="charts-container">
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-line"></i> ROI by Brand</h3>
+                        <div class="chart-container">
+                            <canvas id="roiChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <h3><i class="fas fa-battery-half"></i> Utilization Rate</h3>
+                        <div class="chart-container">
+                            <canvas id="utilizationChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <h3><i class="fas fa-table"></i> Investment Details</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Location</th>
+                                <th>Brand</th>
+                                <th>Units</th>
+                                <th>Investment</th>
+                                <th>Revenue</th>
+                                <th>Profit</th>
+                                <th>ROI</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="investmentTable">
+                            <!-- Table data will be populated by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <script>
+                // Sample data for charts
+                const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug'];
+                const revenueData = [3200, 4100, 3800, 5200, 6100, 5800, 7200, 6900];
+                const profitData = [1200, 1800, 1500, 2200, 2800, 2400, 3200, 2900];
+                const locationData = [35, 25, 20, 15, 5];
+                const locationLabels = ['Mall', 'Airport', 'University', 'Coffee Shop', 'Others'];
+                const roiData = [65, 52, 48, 60, 45, 55];
+                const roiLabels = ['Anker', 'Xiaomi', 'Samsung', 'RAVPower', 'Baseus', 'AUKEY'];
+                const utilizationData = [85, 92, 78, 88, 82, 90];
+
+                // Initialize charts
+                window.onload = function() {
+                    // Revenue & Profit Trend Chart
+                    const revenueCtx = document.getElementById('revenueChart').getContext('2d');
+                    new Chart(revenueCtx, {
+                        type: 'line',
+                        data: {
+                            labels: months,
+                            datasets: [
+                                {
+                                    label: 'Revenue',
+                                    data: revenueData,
+                                    borderColor: '#4f46e5',
+                                    backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                                    tension: 0.3,
+                                    fill: true
+                                },
+                                {
+                                    label: 'Profit',
+                                    data: profitData,
+                                    borderColor: '#10b981',
+                                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                    tension: 0.3,
+                                    fill: true
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: 'top',
+                                }
+                            }
+                        }
+                    });
+
+                    // Location Revenue Chart
+                    const locationCtx = document.getElementById('locationChart').getContext('2d');
+                    new Chart(locationCtx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: locationLabels,
+                            datasets: [{
+                                data: locationData,
+                                backgroundColor: [
+                                    '#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'
+                                ]
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: 'right',
+                                }
+                            }
+                        }
+                    });
+
+                    // ROI by Brand Chart
+                    const roiCtx = document.getElementById('roiChart').getContext('2d');
+                    new Chart(roiCtx, {
+                        type: 'bar',
+                        data: {
+                            labels: roiLabels,
+                            datasets: [{
+                                label: 'ROI %',
+                                data: roiData,
+                                backgroundColor: '#8b5cf6'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: 'ROI (%)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    // Utilization Rate Chart
+                    const utilizationCtx = document.getElementById('utilizationChart').getContext('2d');
+                    new Chart(utilizationCtx, {
+                        type: 'bar',
+                        data: {
+                            labels: roiLabels,
+                            datasets: [{
+                                label: 'Utilization Rate %',
+                                data: utilizationData,
+                                backgroundColor: '#f59e0b'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    max: 100,
+                                    title: {
+                                        display: true,
+                                        text: 'Utilization (%)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    // Populate investment table
+                    const tableData = [
+                        { location: 'Central Mall', brand: 'Anker', units: 25, investment: 4250, revenue: 7012, profit: 2762, roi: 65, status: 'Active' },
+                        { location: 'International Airport', brand: 'Xiaomi', units: 30, investment: 3600, revenue: 5472, profit: 1872, roi: 52, status: 'Active' },
+                        { location: 'City University', brand: 'Samsung', units: 20, investment: 3400, revenue: 5032, profit: 1632, roi: 48, status: 'Active' },
+                        { location: 'StarBucks Coffee', brand: 'RAVPower', units: 15, investment: 2400, revenue: 3840, profit: 1440, roi: 60, status: 'Active' },
+                        { location: 'Tech Hub', brand: 'Baseus', units: 18, investment: 2700, revenue: 3915, profit: 1215, roi: 45, status: 'Active' },
+                        { location: 'Metro Station', brand: 'AUKEY', units: 22, investment: 3300, revenue: 5115, profit: 1815, roi: 55, status: 'Maintenance' },
+                        { location: 'City Library', brand: 'Anker', units: 12, investment: 2040, revenue: 3366, profit: 1326, roi: 65, status: 'Active' }
+                    ];
+
+                    const tableBody = document.getElementById('investmentTable');
+                    tableData.forEach(item => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${item.location}</td>
+                            <td>${item.brand}</td>
+                            <td>${item.units}</td>
+                            <td>$${item.investment.toLocaleString()}</td>
+                            <td>$${item.revenue.toLocaleString()}</td>
+                            <td>$${item.profit.toLocaleString()}</td>
+                            <td>${item.roi}%</td>
+                            <td class="${item.status === 'Active' ? 'status-active' : 'status-inactive'}">${item.status}</td>
+                        `;
+                        tableBody.appendChild(row);
+                    });
+                };
+
+                // Filter functionality
+                document.getElementById('timeRange').addEventListener('change', updateDashboard);
+                document.getElementById('location').addEventListener('change', updateDashboard);
+                document.getElementById('brand').addEventListener('change', updateDashboard);
+
+                function updateDashboard() {
+                    // In a real application, this would fetch new data from the server
+                    // For this demo, we'll just show a loading message
+                    const timeRange = document.getElementById('timeRange').value;
+                    const location = document.getElementById('location').value;
+                    const brand = document.getElementById('brand').value;
+                    
+                    console.log(`Filters updated: TimeRange=${timeRange}, Location=${location}, Brand=${brand}`);
+                    // Here you would typically make an AJAX request to update the dashboard data
+                }
+            </script>
+        </body>
+        </html>
+        """
+
+    def generate_sample_data(self):
+        """Generate sample data for the dashboard"""
+        data = {
+            "total_investment": 24580,
+            "total_revenue": 38420,
+            "net_profit": 13840,
+            "active_units": 142,
+            "roi": 56.3,
+            "utilization_rate": 86
+        }
+        return data
+
+    def start_server(self, port=8000):
+        """Start a simple HTTP server to serve the dashboard"""
+        handler = http.server.SimpleHTTPRequestHandler
+        
+        with socketserver.TCPServer(("", port), handler) as httpd:
+            print(f"Power Bank Investment Dashboard running at http://localhost:{port}")
+            # Write the HTML content to a file
+            with open("index.html", "w") as f:
+                f.write(self.html_content)
+            
+            # Open the dashboard in the default browser
+            webbrowser.open(f"http://localhost:{port}")
+            
+            try:
+                httpd.serve_forever()
+            except KeyboardInterrupt:
+                print("\nShutting down server...")
+
 if __name__ == "__main__":
-    dashboard = PowerBankInvestmentDashboard()
-    dashboard.run()
+    dashboard = PowerBankDashboard()
+    dashboard.start_server()

@@ -1,1098 +1,1111 @@
-from flask import Flask, render_template_string, request, redirect, url_for, flash, session, jsonify
-from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime, timedelta
+from flask import Flask, request, jsonify, render_template_string
+import sqlite3
+from datetime import datetime
 import requests
 import re
-import secrets
 import os
-import json
-from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'gold-investment-secret-key-2024'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///gold_investment.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db = SQLAlchemy(app)
+# HTML Template
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Naira Trading Platform</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-# Models
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    full_name = db.Column(db.String(100), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    balance = db.Column(db.Float, default=0.0)
-    gold_balance = db.Column(db.Float, default=0.0)
-    phone_number = db.Column(db.String(20))
-    transactions = db.relationship('Transaction', backref='user', lazy=True)
-    payments = db.relationship('PaymentReceipt', backref='user', lazy=True)
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
 
-class PaymentReceipt(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    amount = db.Column(db.Float, nullable=False)
-    sender_name = db.Column(db.String(100), nullable=False)
-    recipient_name = db.Column(db.String(100), nullable=False)
-    transaction_id = db.Column(db.String(100), unique=True)
-    session_id = db.Column(db.String(100))
-    timestamp = db.Column(db.DateTime, nullable=False)
-    reference_text = db.Column(db.String(200))
-    status = db.Column(db.String(20), default='pending')
-    verified_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
 
-class Transaction(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    type = db.Column(db.String(20), nullable=False)
-    amount = db.Column(db.Float, nullable=False)
-    gold_amount = db.Column(db.Float)
-    gold_price = db.Column(db.Float)
-    status = db.Column(db.String(20), default='completed')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
 
-class GoldPrice(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    price = db.Column(db.Float, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
 
-# Configuration
-REFERENCE_PATTERNS = [
-    r'invest\d+',
-    r'gold\d+',
-    r'xau\d+',
-    r'tmzbrand\d+',
-    r'investment\d+'
-]
+        .user-info button {
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+        }
 
-RECIPIENT_NAMES = [
-    "OLUWATOBILOBA SHERIFDEEN KEHINDE",
-    "GOLD INVESTMENT",
-    "XAU TRADING",
-    "GOLD XAU"
-]
+        .section {
+            padding: 30px;
+        }
 
-# Gold API Service
-class GoldAPIService:
-    @staticmethod
-    def get_gold_price():
-        try:
-            # Mock gold price - in production, use real API
-            return 1950.0 + (datetime.utcnow().minute % 10) * 5.0
-        except:
-            return 1950.0
+        .auth-form {
+            display: flex;
+            gap: 10px;
+            max-width: 400px;
+            margin: 20px 0;
+        }
 
-# Payment Receipt Parser
-class ReceiptParser:
-    @staticmethod
-    def parse_receipt_text(text):
-        try:
-            lines = text.split('\n')
-            parsed_data = {
-                'amount': None,
-                'sender_name': None,
-                'recipient_name': None,
-                'timestamp': None,
-                'transaction_id': None,
-                'session_id': None,
-                'reference_text': None,
-                'status': 'successful'
+        .auth-form input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .balance-card {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 12px;
+            margin-bottom: 25px;
+        }
+
+        .balance-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .balance-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+        }
+
+        .trading-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .trade-form, .deposit-form, .withdrawal-form {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #e9ecef;
+        }
+
+        .trade-form h3, .deposit-form h3, .withdrawal-form h3 {
+            margin-bottom: 15px;
+            color: #495057;
+        }
+
+        select, input {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0;
+            border: 2px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .trade-preview {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 10px 0;
+            border-left: 4px solid #28a745;
+        }
+
+        .activity-tabs {
+            display: flex;
+            border-bottom: 2px solid #e9ecef;
+            margin-bottom: 20px;
+        }
+
+        .tab-button {
+            background: none;
+            border: none;
+            padding: 12px 24px;
+            color: #6c757d;
+            border-bottom: 3px solid transparent;
+            border-radius: 0;
+        }
+
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        .activity-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .activity-item {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            transition: transform 0.2s;
+        }
+
+        .activity-item:hover {
+            transform: translateX(5px);
+            border-left: 4px solid #667eea;
+        }
+
+        .activity-item.buy {
+            border-left: 4px solid #28a745;
+        }
+
+        .activity-item.sell {
+            border-left: 4px solid #dc3545;
+        }
+
+        .activity-item.withdrawal {
+            border-left: 4px solid #ffc107;
+        }
+
+        .activity-main {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .activity-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 14px;
+            color: #6c757d;
+        }
+
+        .activity-type {
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+        }
+
+        .activity-amount {
+            font-weight: 600;
+        }
+
+        .activity-price {
+            color: #495057;
+        }
+
+        .activity-status {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .activity-status.completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .activity-status.pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
             }
             
-            for i, line in enumerate(lines):
-                line = line.strip()
-                
-                # Extract amount
-                if not parsed_data['amount']:
-                    amount_match = re.search(r'[\d,]+\.\d{2}', line)
-                    if amount_match:
-                        parsed_data['amount'] = float(amount_match.group().replace(',', ''))
-                
-                # Extract timestamp
-                if not parsed_data['timestamp']:
-                    timestamp_match = re.search(r'[A-Za-z]{3} \d{1,2},? \d{4}.*\d{1,2}:\d{2}', line)
-                    if timestamp_match:
-                        try:
-                            parsed_data['timestamp'] = datetime.strptime(
-                                timestamp_match.group(), '%b %d, %Y %I:%M:%S %p'
-                            )
-                        except:
-                            try:
-                                parsed_data['timestamp'] = datetime.strptime(
-                                    timestamp_match.group(), '%b %d, %Y %I:%M %p'
-                                )
-                            except:
-                                pass
-                
-                # Extract sender name
-                if 'sender' in line.lower() and i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    if next_line and not any(x in next_line.lower() for x in ['transaction', 'recipient', '---']):
-                        parsed_data['sender_name'] = next_line
-                
-                # Extract recipient name
-                if 'recipient' in line.lower() and i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    if next_line and not any(x in next_line.lower() for x in ['transaction', 'sender', '---']):
-                        parsed_data['recipient_name'] = next_line
-                
-                # Extract transaction ID
-                if 'transaction id' in line.lower():
-                    parts = line.split(':')
-                    if len(parts) > 1:
-                        parsed_data['transaction_id'] = parts[1].strip()
-                
-                # Extract session ID
-                if 'session id' in line.lower():
-                    parts = line.split(':')
-                    if len(parts) > 1:
-                        parsed_data['session_id'] = parts[1].strip()
-                
-                # Extract reference text
-                if any(keyword in line.lower() for keyword in ['reference', 'what\'s it for', 'purpose']):
-                    parts = line.split(':')
-                    if len(parts) > 1:
-                        parsed_data['reference_text'] = parts[1].strip()
+            .container {
+                border-radius: 10px;
+            }
             
-            return parsed_data
-        except Exception as e:
-            print(f"Error parsing receipt: {e}")
-            return None
-
-    @staticmethod
-    def validate_receipt(parsed_data, user_full_name):
-        if not parsed_data:
-            return False, "Unable to parse receipt data"
-        
-        if not parsed_data['amount']:
-            return False, "Could not extract amount from receipt"
-        
-        if not parsed_data['sender_name']:
-            return False, "Could not extract sender name from receipt"
-        
-        if not parsed_data['recipient_name']:
-            return False, "Could not extract recipient name from receipt"
-        
-        if user_full_name.upper() not in parsed_data['sender_name'].upper():
-            return False, f"Sender name doesn't match your account name"
-        
-        valid_recipient = any(recipient in parsed_data['recipient_name'].upper() for recipient in RECIPIENT_NAMES)
-        if not valid_recipient:
-            return False, f"Invalid recipient"
-        
-        if parsed_data['reference_text']:
-            valid_reference = any(re.search(pattern, parsed_data['reference_text'].lower()) for pattern in REFERENCE_PATTERNS)
-            if not valid_reference:
-                return False, f"Invalid reference text"
-        
-        if parsed_data['timestamp']:
-            time_diff = datetime.utcnow() - parsed_data['timestamp']
-            if time_diff > timedelta(hours=24):
-                return False, "Receipt is too old (more than 24 hours)"
-        
-        return True, "Receipt validated successfully"
-
-# HTML Templates as complete pages (no template inheritance)
-HTML_PAGES = {
-    'index': '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GoldXAU Investment</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .gold-gradient { background: linear-gradient(135deg, #FFD700, #D4AF37); }
-        .loading { display: none; }
-    </style>
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="gold-gradient shadow-lg">
-        <div class="container mx-auto px-4">
-            <div class="flex justify-between items-center py-4">
-                <div class="flex items-center space-x-3">
-                    <i class="fas fa-coins text-2xl text-white"></i>
-                    <span class="text-xl font-bold text-white">GoldXAU Investment</span>
-                </div>
-                <div class="flex space-x-6 text-white">
-                    <a href="/" class="hover:text-yellow-200 transition">Home</a>
-                    <a href="/login" class="hover:text-yellow-200 transition">Login</a>
-                </div>
-            </div>
-        </div>
-    </nav>
-
-    <main class="container mx-auto px-4 py-8">
-        <div class="text-center py-12">
-            <h1 class="text-5xl font-bold text-gray-800 mb-6">Invest in Gold with Confidence</h1>
-            <p class="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
-                Secure your financial future with our gold investment platform. 
-                Easy payment verification and real-time gold trading.
-            </p>
-            <div class="space-x-4">
-                <a href="/login" class="bg-yellow-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-yellow-700 transition">
-                    Start Investing
-                </a>
-                <a href="/login" class="border-2 border-yellow-600 text-yellow-600 px-8 py-3 rounded-lg font-semibold hover:bg-yellow-50 transition">
-                    View Gold Prices
-                </a>
-            </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-8 mt-16">
-            <div class="text-center p-6 bg-white rounded-lg shadow-lg">
-                <i class="fas fa-receipt text-4xl text-yellow-600 mb-4"></i>
-                <h3 class="text-xl font-semibold mb-2">Receipt Verification</h3>
-                <p class="text-gray-600">Upload payment receipts for automatic verification and instant funding</p>
-            </div>
-            <div class="text-center p-6 bg-white rounded-lg shadow-lg">
-                <i class="fas fa-chart-line text-4xl text-yellow-600 mb-4"></i>
-                <h3 class="text-xl font-semibold mb-2">Real-time Gold Prices</h3>
-                <p class="text-gray-600">Live XAU/USD prices with advanced trading tools</p>
-            </div>
-            <div class="text-center p-6 bg-white rounded-lg shadow-lg">
-                <i class="fas fa-shield-alt text-4xl text-yellow-600 mb-4"></i>
-                <h3 class="text-xl font-semibold mb-2">Secure Platform</h3>
-                <p class="text-gray-600">Bank-level security for all your transactions and investments</p>
-            </div>
-        </div>
-    </main>
-
-    <footer class="bg-gray-800 text-white mt-12">
-        <div class="container mx-auto px-4 py-8">
-            <div class="text-center">
-                <p>&copy; 2024 GoldXAU Investment. All rights reserved.</p>
-                <p class="text-gray-400 mt-2">Invest in Gold - Secure Your Future</p>
-            </div>
-        </div>
-    </footer>
-</body>
-</html>
-    ''',
-
-    'login': '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - GoldXAU Investment</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="bg-gradient-to-r from-yellow-400 to-yellow-600 shadow-lg">
-        <div class="container mx-auto px-4">
-            <div class="flex justify-between items-center py-4">
-                <div class="flex items-center space-x-3">
-                    <i class="fas fa-coins text-2xl text-white"></i>
-                    <span class="text-xl font-bold text-white">GoldXAU Investment</span>
-                </div>
-            </div>
-        </div>
-    </nav>
-
-    <main class="container mx-auto px-4 py-8">
-        <div class="max-w-md mx-auto bg-white rounded-lg shadow-lg p-8">
-            <h2 class="text-2xl font-bold text-center mb-6">Welcome Back</h2>
-            <form method="POST" action="/login">
-                <div class="mb-4">
-                    <label class="block text-gray-700 mb-2">Email Address</label>
-                    <input type="email" name="email" required 
-                           class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-transparent"
-                           placeholder="your@email.com">
-                </div>
-                <div class="mb-4">
-                    <label class="block text-gray-700 mb-2">Full Name</label>
-                    <input type="text" name="full_name" required 
-                           class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-transparent"
-                           placeholder="Your Full Name">
-                </div>
-                <button type="submit" class="w-full bg-yellow-600 text-white py-3 rounded-lg font-semibold hover:bg-yellow-700 transition">
-                    Continue to Dashboard
-                </button>
-            </form>
-            <p class="text-gray-600 text-center mt-4 text-sm">
-                By continuing, you agree to our Terms of Service and Privacy Policy
-            </p>
-        </div>
-    </main>
-</body>
-</html>
-    ''',
-
-    'dashboard': '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - GoldXAU Investment</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .gold-gradient { background: linear-gradient(135deg, #FFD700, #D4AF37); }
-        .loading { display: none; }
-    </style>
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="gold-gradient shadow-lg">
-        <div class="container mx-auto px-4">
-            <div class="flex justify-between items-center py-4">
-                <div class="flex items-center space-x-3">
-                    <i class="fas fa-coins text-2xl text-white"></i>
-                    <span class="text-xl font-bold text-white">GoldXAU Investment</span>
-                </div>
-                <div class="flex space-x-6 text-white">
-                    <a href="/dashboard" class="hover:text-yellow-200 transition">Dashboard</a>
-                    <a href="/verify_payment" class="hover:text-yellow-200 transition">Verify Payment</a>
-                    <a href="/gold_trading" class="hover:text-yellow-200 transition">Gold Trading</a>
-                    <a href="/transaction_history" class="hover:text-yellow-200 transition">History</a>
-                    <a href="/logout" class="hover:text-yellow-200 transition">Logout</a>
-                </div>
-            </div>
-        </div>
-    </nav>
-
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            <div class="container mx-auto px-4 mt-4">
-                {% for category, message in messages %}
-                    <div class="alert p-4 rounded-lg mb-4 
-                                {% if category == 'success' %}bg-green-100 text-green-800 border border-green-300
-                                {% else %}bg-red-100 text-red-800 border border-red-300{% endif %}">
-                        {{ message }}
-                    </div>
-                {% endfor %}
-            </div>
-        {% endif %}
-    {% endwith %}
-
-    <main class="container mx-auto px-4 py-8">
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div class="lg:col-span-2">
-                <h1 class="text-3xl font-bold mb-8">Welcome, {{ user.full_name }}!</h1>
-                
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                    <div class="bg-white p-6 rounded-lg shadow-lg border-l-4 border-green-500">
-                        <h3 class="text-gray-600">Cash Balance</h3>
-                        <p class="text-2xl font-bold">${{ "%.2f"|format(user.balance) }}</p>
-                    </div>
-                    <div class="bg-white p-6 rounded-lg shadow-lg border-l-4 border-yellow-500">
-                        <h3 class="text-gray-600">Gold Balance</h3>
-                        <p class="text-2xl font-bold">{{ "%.3f"|format(user.gold_balance) }} oz</p>
-                    </div>
-                </div>
-
-                <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
-                    <h2 class="text-xl font-semibold mb-4">Quick Actions</h2>
-                    <div class="flex flex-wrap gap-4">
-                        <a href="/verify_payment" class="bg-yellow-600 text-white px-6 py-2 rounded-lg hover:bg-yellow-700 transition">
-                            Verify Payment
-                        </a>
-                        <a href="/gold_trading" class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition">
-                            Trade Gold
-                        </a>
-                        <a href="/transaction_history" class="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition">
-                            View History
-                        </a>
-                    </div>
-                </div>
-            </div>
-
-            <div class="bg-white rounded-lg shadow-lg p-6">
-                <h2 class="text-xl font-semibold mb-4">Gold Price</h2>
-                <div id="goldPrice" class="text-3xl font-bold text-yellow-600 mb-4">
-                    Loading...
-                </div>
-                <div class="text-sm text-gray-600">
-                    <p>XAU/USD Live Price</p>
-                    <p class="mt-2">Last updated: <span id="priceTime">-</span></p>
-                </div>
-                
-                <div class="mt-6 p-4 bg-gray-50 rounded-lg">
-                    <h3 class="font-semibold mb-2">Payment Instructions</h3>
-                    <ul class="text-sm space-y-1">
-                        <li>• Use reference: invest12345</li>
-                        <li>• Recipient: OLUWATOBILOBA SHERIFDEEN KEHINDE</li>
-                        <li>• Upload receipt after payment</li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-    </main>
-
-    <footer class="bg-gray-800 text-white mt-12">
-        <div class="container mx-auto px-4 py-8">
-            <div class="text-center">
-                <p>&copy; 2024 GoldXAU Investment. All rights reserved.</p>
-                <p class="text-gray-400 mt-2">Invest in Gold - Secure Your Future</p>
-            </div>
-        </div>
-    </footer>
-
-    <script>
-        function updateGoldPrice() {
-            fetch('/api/gold_price')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('goldPrice').textContent = '$' + data.price.toFixed(2);
-                    document.getElementById('priceTime').textContent = new Date().toLocaleTimeString();
-                })
-                .catch(error => {
-                    console.error('Error fetching gold price:', error);
-                });
-        }
-
-        updateGoldPrice();
-        setInterval(updateGoldPrice, 30000);
-    </script>
-</body>
-</html>
-    ''',
-
-    'verify_payment': '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Verify Payment - GoldXAU Investment</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .gold-gradient { background: linear-gradient(135deg, #FFD700, #D4AF37); }
-        .receipt-box { 
-            border: 2px dashed #e5e7eb;
-            background: #f8fafc;
-            transition: all 0.3s ease;
-        }
-        .receipt-box.dragover {
-            border-color: #3b82f6;
-            background: #dbeafe;
-        }
-        .loading { display: none; }
-    </style>
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="gold-gradient shadow-lg">
-        <div class="container mx-auto px-4">
-            <div class="flex justify-between items-center py-4">
-                <div class="flex items-center space-x-3">
-                    <i class="fas fa-coins text-2xl text-white"></i>
-                    <span class="text-xl font-bold text-white">GoldXAU Investment</span>
-                </div>
-                <div class="flex space-x-6 text-white">
-                    <a href="/dashboard" class="hover:text-yellow-200 transition">Dashboard</a>
-                    <a href="/verify_payment" class="hover:text-yellow-200 transition">Verify Payment</a>
-                    <a href="/gold_trading" class="hover:text-yellow-200 transition">Gold Trading</a>
-                    <a href="/transaction_history" class="hover:text-yellow-200 transition">History</a>
-                    <a href="/logout" class="hover:text-yellow-200 transition">Logout</a>
-                </div>
-            </div>
-        </div>
-    </nav>
-
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            <div class="container mx-auto px-4 mt-4">
-                {% for category, message in messages %}
-                    <div class="alert p-4 rounded-lg mb-4 
-                                {% if category == 'success' %}bg-green-100 text-green-800 border border-green-300
-                                {% else %}bg-red-100 text-red-800 border border-red-300{% endif %}">
-                        {{ message }}
-                    </div>
-                {% endfor %}
-            </div>
-        {% endif %}
-    {% endwith %}
-
-    <main class="container mx-auto px-4 py-8">
-        <div class="max-w-4xl mx-auto">
-            <h1 class="text-3xl font-bold mb-8">Verify Payment Receipt</h1>
+            header {
+                flex-direction: column;
+                gap: 15px;
+                text-align: center;
+            }
             
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div class="bg-white rounded-lg shadow-lg p-6">
-                    <h2 class="text-xl font-semibold mb-4">Upload Receipt</h2>
-                    
-                    <form method="POST" onsubmit="showLoading()">
-                        <div class="mb-4">
-                            <label class="block text-gray-700 mb-2">Paste receipt text:</label>
-                            <textarea name="receipt_text" rows="12" 
-                                      class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-transparent"
-                                      placeholder="Paste the entire receipt text here...
-Example:
-# PalmPay
+            .section {
+                padding: 20px;
+            }
+            
+            .auth-form {
+                flex-direction: column;
+            }
+            
+            .balance-details {
+                grid-template-columns: 1fr;
+            }
+            
+            .trading-section {
+                grid-template-columns: 1fr;
+            }
+            
+            .activity-main, .activity-meta {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>💰 Naira Trading Platform</h1>
+            <div class="user-info" id="userInfo" style="display: none;">
+                <span id="userEmail"></span>
+                <button onclick="logout()">Logout</button>
+            </div>
+        </header>
 
-## 1,000.00  
-Successful Transaction  
+        <!-- Login/Register Section -->
+        <div id="authSection" class="section">
+            <h2>Get Started</h2>
+            <div class="auth-form">
+                <input type="email" id="emailInput" placeholder="Enter your email" required>
+                <button onclick="registerUser()">Register/Login</button>
+            </div>
+        </div>
 
-Oct 24, 2024 1:02:50 AM  
-
-Recipient:  
-OLUWATOBILOBA SHERIFDEEN KEHINDE  
-
-Sender:  
-YOUR FULL NAME  
-
-Transaction ID  
-032u11jcc2200  
-
-Reference: invest12345" required></textarea>
-                        </div>
-                        
-                        <button type="submit" class="w-full bg-yellow-600 text-white py-3 rounded-lg font-semibold hover:bg-yellow-700 transition">
-                            Verify Payment
-                        </button>
-                    </form>
-                </div>
-
-                <div class="bg-white rounded-lg shadow-lg p-6">
-                    <h2 class="text-xl font-semibold mb-4">Verification Guidelines</h2>
-                    
-                    <div class="space-y-4">
-                        <div class="p-4 bg-green-50 rounded-lg">
-                            <h3 class="font-semibold text-green-800">✅ Required Information</h3>
-                            <ul class="text-sm text-green-700 mt-2 space-y-1">
-                                <li>• Amount transferred (e.g., 1,000.00)</li>
-                                <li>• Sender name matching your account</li>
-                                <li>• Recipient: OLUWATOBILOBA SHERIFDEEN KEHINDE</li>
-                                <li>• Transaction timestamp</li>
-                                <li>• Reference containing &quot;invest&quot;</li>
-                            </ul>
-                        </div>
-                        
-                        <div class="p-4 bg-yellow-50 rounded-lg">
-                            <h3 class="font-semibold text-yellow-800">📝 Reference Examples</h3>
-                            <ul class="text-sm text-yellow-700 mt-2 space-y-1">
-                                <li>• invest12345</li>
-                                <li>• gold67890</li>
-                                <li>• xau54321</li>
-                                <li>• investment999</li>
-                            </ul>
-                        </div>
-                        
-                        <div class="p-4 bg-blue-50 rounded-lg">
-                            <h3 class="font-semibold text-blue-800">⚡ Processing Time</h3>
-                            <p class="text-sm text-blue-700 mt-2">
-                                Payments are verified within 5-15 minutes during business hours. 
-                                You will receive email confirmation once processed.
-                            </p>
-                        </div>
+        <!-- Dashboard Section -->
+        <div id="dashboard" class="section" style="display: none;">
+            <div class="balance-card">
+                <h3>Your Balance</h3>
+                <div class="balance-details">
+                    <div class="balance-item">
+                        <span>USDT Balance:</span>
+                        <strong id="usdtBalance">0.00</strong>
+                    </div>
+                    <div class="balance-item">
+                        <span>NGN Balance:</span>
+                        <strong id="ngnBalance">0.00</strong>
+                    </div>
+                    <div class="balance-item">
+                        <span>Current Rate:</span>
+                        <strong id="currentRate">₦0.00</strong>
                     </div>
                 </div>
             </div>
-        </div>
-    </main>
 
-    <footer class="bg-gray-800 text-white mt-12">
-        <div class="container mx-auto px-4 py-8">
-            <div class="text-center">
-                <p>&copy; 2024 GoldXAU Investment. All rights reserved.</p>
-                <p class="text-gray-400 mt-2">Invest in Gold - Secure Your Future</p>
+            <!-- Trading Section -->
+            <div class="trading-section">
+                <div class="trade-form">
+                    <h3>Trade USDT/NGN</h3>
+                    <select id="tradeType">
+                        <option value="buy">Buy USDT</option>
+                        <option value="sell">Sell USDT</option>
+                    </select>
+                    <input type="number" id="tradeAmount" placeholder="Amount USDT" step="0.01">
+                    <div class="trade-preview">
+                        <p>Estimated Total: <span id="tradeTotal">₦0.00</span></p>
+                    </div>
+                    <button onclick="executeTrade()">Execute Trade</button>
+                </div>
+
+                <!-- Deposit Section -->
+                <div class="deposit-form">
+                    <h3>Deposit USDT</h3>
+                    <input type="number" id="depositAmount" placeholder="Amount USDT" step="0.01">
+                    <button onclick="generateDeposit()">Get Deposit Address</button>
+                    <div id="depositInfo" style="display: none; margin-top: 10px;">
+                        <p><strong>Send exactly: <span id="depositAmt">0</span> USDT</strong></p>
+                        <p>To address: <code id="depositAddress"></code></p>
+                        <small>TRON (TRC20) network only</small>
+                    </div>
+                </div>
+
+                <!-- Withdrawal Section -->
+                <div class="withdrawal-form">
+                    <h3>Withdraw USDT</h3>
+                    <input type="number" id="withdrawAmount" placeholder="Amount USDT" step="0.01">
+                    <input type="text" id="withdrawAddress" placeholder="TRON Address">
+                    <button onclick="withdrawUSDT()">Withdraw</button>
+                </div>
+            </div>
+
+            <!-- Activity Tabs -->
+            <div class="activity-tabs">
+                <button class="tab-button active" onclick="openTab('trades')">Trade History</button>
+                <button class="tab-button" onclick="openTab('withdrawals')">Withdrawals</button>
+            </div>
+
+            <div class="tab-content">
+                <div id="tradesTab" class="tab-pane active">
+                    <h4>Recent Trades</h4>
+                    <div id="tradesList" class="activity-list"></div>
+                </div>
+                <div id="withdrawalsTab" class="tab-pane">
+                    <h4>Withdrawal History</h4>
+                    <div id="withdrawalsList" class="activity-list"></div>
+                </div>
             </div>
         </div>
-    </footer>
 
-    <div id="loading" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" style="display: none;">
-        <div class="bg-white p-8 rounded-lg text-center">
-            <i class="fas fa-spinner fa-spin text-3xl text-yellow-600 mb-4"></i>
-            <p class="text-lg font-semibold">Processing Receipt...</p>
+        <!-- Loading Spinner -->
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
         </div>
     </div>
 
     <script>
-        function showLoading() {
-            document.getElementById('loading').style.display = 'flex';
-        }
-    </script>
-</body>
-</html>
-    ''',
+        let currentUser = null;
 
-    'gold_trading': '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gold Trading - GoldXAU Investment</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .gold-gradient { background: linear-gradient(135deg, #FFD700, #D4AF37); }
-        .loading { display: none; }
-    </style>
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="gold-gradient shadow-lg">
-        <div class="container mx-auto px-4">
-            <div class="flex justify-between items-center py-4">
-                <div class="flex items-center space-x-3">
-                    <i class="fas fa-coins text-2xl text-white"></i>
-                    <span class="text-xl font-bold text-white">GoldXAU Investment</span>
-                </div>
-                <div class="flex space-x-6 text-white">
-                    <a href="/dashboard" class="hover:text-yellow-200 transition">Dashboard</a>
-                    <a href="/verify_payment" class="hover:text-yellow-200 transition">Verify Payment</a>
-                    <a href="/gold_trading" class="hover:text-yellow-200 transition">Gold Trading</a>
-                    <a href="/transaction_history" class="hover:text-yellow-200 transition">History</a>
-                    <a href="/logout" class="hover:text-yellow-200 transition">Logout</a>
-                </div>
-            </div>
-        </div>
-    </nav>
+        // Authentication
+        async function registerUser() {
+            const email = document.getElementById('emailInput').value;
+            if (!email) return alert('Please enter your email');
 
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            <div class="container mx-auto px-4 mt-4">
-                {% for category, message in messages %}
-                    <div class="alert p-4 rounded-lg mb-4 
-                                {% if category == 'success' %}bg-green-100 text-green-800 border border-green-300
-                                {% else %}bg-red-100 text-red-800 border border-red-300{% endif %}">
-                        {{ message }}
-                    </div>
-                {% endfor %}
-            </div>
-        {% endif %}
-    {% endwith %}
-
-    <main class="container mx-auto px-4 py-8">
-        <div class="max-w-6xl mx-auto">
-            <h1 class="text-3xl font-bold mb-8">Gold Trading (XAU/USD)</h1>
-            
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                <div class="lg:col-span-2">
-                    <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
-                        <div class="flex justify-between items-center mb-6">
-                            <h2 class="text-2xl font-bold">Current Gold Price</h2>
-                            <div id="goldPriceDisplay" class="text-3xl font-bold text-yellow-600">
-                                Loading...
-                            </div>
-                        </div>
-                        
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div class="bg-gray-50 p-4 rounded-lg">
-                                <h3 class="font-semibold mb-2">Buy Gold</h3>
-                                <form method="POST" action="/buy_gold" onsubmit="showLoading()">
-                                    <div class="mb-4">
-                                        <label class="block text-gray-700 mb-2">Amount (USD)</label>
-                                        <input type="number" name="amount" step="0.01" min="10" required
-                                               class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-transparent">
-                                    </div>
-                                    <button type="submit" class="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition">
-                                        Buy Gold
-                                    </button>
-                                </form>
-                            </div>
-                            
-                            <div class="bg-gray-50 p-4 rounded-lg">
-                                <h3 class="font-semibold mb-2">Sell Gold</h3>
-                                <form method="POST" action="/sell_gold" onsubmit="showLoading()">
-                                    <div class="mb-4">
-                                        <label class="block text-gray-700 mb-2">Gold Amount (oz)</label>
-                                        <input type="number" name="gold_amount" step="0.001" min="0.001" required
-                                               class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-yellow-500 focus:border-transparent">
-                                    </div>
-                                    <button type="submit" class="w-full bg-red-600 text-white py-3 rounded-lg font-semibold hover:bg-red-700 transition">
-                                        Sell Gold
-                                    </button>
-                                </form>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="bg-white rounded-lg shadow-lg p-6">
-                    <h2 class="text-xl font-semibold mb-4">Account Summary</h2>
-                    <div class="space-y-4">
-                        <div>
-                            <p class="text-gray-600">Cash Balance</p>
-                            <p class="text-2xl font-bold">${{ "%.2f"|format(user.balance) }}</p>
-                        </div>
-                        <div>
-                            <p class="text-gray-600">Gold Balance</p>
-                            <p class="text-2xl font-bold text-yellow-600">{{ "%.3f"|format(user.gold_balance) }} oz</p>
-                        </div>
-                        <div>
-                            <p class="text-gray-600">Portfolio Value</p>
-                            <p class="text-2xl font-bold" id="portfolioValue">Calculating...</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </main>
-
-    <footer class="bg-gray-800 text-white mt-12">
-        <div class="container mx-auto px-4 py-8">
-            <div class="text-center">
-                <p>&copy; 2024 GoldXAU Investment. All rights reserved.</p>
-                <p class="text-gray-400 mt-2">Invest in Gold - Secure Your Future</p>
-            </div>
-        </div>
-    </footer>
-
-    <div id="loading" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" style="display: none;">
-        <div class="bg-white p-8 rounded-lg text-center">
-            <i class="fas fa-spinner fa-spin text-3xl text-yellow-600 mb-4"></i>
-            <p class="text-lg font-semibold">Processing Transaction...</p>
-        </div>
-    </div>
-
-    <script>
-        function showLoading() {
-            document.getElementById('loading').style.display = 'flex';
-        }
-
-        function updateTradingInfo() {
-            fetch('/api/gold_price')
-                .then(response => response.json())
-                .then(data => {
-                    const goldPrice = data.price;
-                    document.getElementById('goldPriceDisplay').textContent = '$' + goldPrice.toFixed(2);
-                    
-                    const goldBalance = {{ user.gold_balance }};
-                    const cashBalance = {{ user.balance }};
-                    const portfolioValue = (goldBalance * goldPrice) + cashBalance;
-                    document.getElementById('portfolioValue').textContent = '$' + portfolioValue.toFixed(2);
-                })
-                .catch(error => {
-                    console.error('Error:', error);
+            showLoading();
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email })
                 });
+
+                const data = await response.json();
+                
+                if (response.ok) {
+                    currentUser = data.user;
+                    showDashboard();
+                    loadUserData();
+                } else {
+                    alert(data.error);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+            hideLoading();
         }
 
-        updateTradingInfo();
-        setInterval(updateTradingInfo, 10000);
+        function logout() {
+            currentUser = null;
+            document.getElementById('authSection').style.display = 'block';
+            document.getElementById('dashboard').style.display = 'none';
+            document.getElementById('userInfo').style.display = 'none';
+        }
+
+        function showDashboard() {
+            document.getElementById('authSection').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+            document.getElementById('userInfo').style.display = 'flex';
+            document.getElementById('userEmail').textContent = currentUser.email;
+        }
+
+        // Trading Functions
+        async function loadUserData() {
+            if (!currentUser) return;
+
+            // Load balance
+            const balanceResponse = await fetch(`/api/balance/${currentUser.id}`);
+            const balanceData = await balanceResponse.json();
+            
+            if (balanceResponse.ok) {
+                document.getElementById('usdtBalance').textContent = balanceData.usdt_balance.toFixed(2);
+                document.getElementById('ngnBalance').textContent = '₦' + balanceData.ngn_balance.toFixed(2);
+                document.getElementById('currentRate').textContent = '₦' + balanceData.usdt_ngn_rate.toFixed(2);
+            }
+
+            // Load trades
+            loadTrades();
+            loadWithdrawals();
+        }
+
+        async function executeTrade() {
+            const type = document.getElementById('tradeType').value;
+            const amount = parseFloat(document.getElementById('tradeAmount').value);
+
+            if (!amount || amount <= 0) return alert('Please enter a valid amount');
+
+            showLoading();
+            try {
+                const response = await fetch('/api/trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: currentUser.id,
+                        type: type,
+                        amount: amount
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert('Trade executed successfully!');
+                    loadUserData();
+                    document.getElementById('tradeAmount').value = '';
+                } else {
+                    alert(data.error);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+            hideLoading();
+        }
+
+        async function generateDeposit() {
+            const amount = parseFloat(document.getElementById('depositAmount').value);
+            if (!amount || amount <= 0) return alert('Please enter a valid amount');
+
+            showLoading();
+            try {
+                const response = await fetch('/api/deposit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: currentUser.id,
+                        amount: amount
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('depositAmt').textContent = amount;
+                    document.getElementById('depositAddress').textContent = data.deposit_address;
+                    document.getElementById('depositInfo').style.display = 'block';
+                } else {
+                    alert(data.error);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+            hideLoading();
+        }
+
+        async function withdrawUSDT() {
+            const amount = parseFloat(document.getElementById('withdrawAmount').value);
+            const address = document.getElementById('withdrawAddress').value;
+
+            if (!amount || amount <= 0) return alert('Please enter a valid amount');
+            if (!address) return alert('Please enter a TRON address');
+
+            if (!confirm(`Withdraw ${amount} USDT to ${address}?`)) return;
+
+            showLoading();
+            try {
+                const response = await fetch('/api/withdraw', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: currentUser.id,
+                        amount: amount,
+                        tron_address: address
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert('Withdrawal submitted successfully!');
+                    loadUserData();
+                    document.getElementById('withdrawAmount').value = '';
+                    document.getElementById('withdrawAddress').value = '';
+                } else {
+                    alert(data.error);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+            hideLoading();
+        }
+
+        async function loadTrades() {
+            if (!currentUser) return;
+
+            const response = await fetch(`/api/trades/${currentUser.id}`);
+            const data = await response.json();
+            
+            if (response.ok) {
+                const tradesList = document.getElementById('tradesList');
+                tradesList.innerHTML = data.trades.map(trade => `
+                    <div class="activity-item ${trade.type}">
+                        <div class="activity-main">
+                            <span class="activity-type">${trade.type.toUpperCase()}</span>
+                            <span class="activity-amount">${trade.amount} USDT</span>
+                            <span class="activity-price">₦${trade.price}</span>
+                        </div>
+                        <div class="activity-meta">
+                            <span class="activity-total">₦${trade.total.toFixed(2)}</span>
+                            <span class="activity-time">${new Date(trade.timestamp).toLocaleString()}</span>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        }
+
+        async function loadWithdrawals() {
+            if (!currentUser) return;
+
+            const response = await fetch(`/api/withdrawals/${currentUser.id}`);
+            const data = await response.json();
+            
+            if (response.ok) {
+                const withdrawalsList = document.getElementById('withdrawalsList');
+                withdrawalsList.innerHTML = data.withdrawals.map(withdrawal => `
+                    <div class="activity-item withdrawal">
+                        <div class="activity-main">
+                            <span class="activity-type">WITHDRAWAL</span>
+                            <span class="activity-amount">${withdrawal.amount} USDT</span>
+                            <span class="activity-status ${withdrawal.status}">${withdrawal.status}</span>
+                        </div>
+                        <div class="activity-meta">
+                            <span class="activity-address">${withdrawal.tron_address}</span>
+                            <span class="activity-time">${new Date(withdrawal.created_at).toLocaleString()}</span>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        }
+
+        // Tab Navigation
+        function openTab(tabName) {
+            // Hide all tab panes
+            document.querySelectorAll('.tab-pane').forEach(pane => {
+                pane.classList.remove('active');
+            });
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.tab-button').forEach(button => {
+                button.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName + 'Tab').classList.add('active');
+            event.currentTarget.classList.add('active');
+        }
+
+        // Utility Functions
+        function showLoading() {
+            document.getElementById('loading').style.display = 'flex';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        // Update trade total when amount changes
+        document.getElementById('tradeAmount').addEventListener('input', updateTradeTotal);
+        document.getElementById('tradeType').addEventListener('change', updateTradeTotal);
+
+        async function updateTradeTotal() {
+            const amount = parseFloat(document.getElementById('tradeAmount').value) || 0;
+            const type = document.getElementById('tradeType').value;
+            
+            try {
+                const response = await fetch('/api/rates');
+                const data = await response.json();
+                
+                if (response.ok) {
+                    const rate = data.USDT_NGN;
+                    const total = type === 'buy' ? amount * rate : amount * rate;
+                    document.getElementById('tradeTotal').textContent = '₦' + total.toFixed(2);
+                }
+            } catch (error) {
+                console.error('Error fetching rates:', error);
+            }
+        }
+
+        // Auto-refresh data every 30 seconds
+        setInterval(() => {
+            if (currentUser) {
+                loadUserData();
+            }
+        }, 30000);
     </script>
 </body>
 </html>
-    ''',
+'''
 
-    'transaction_history': '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Transaction History - GoldXAU Investment</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        .gold-gradient { background: linear-gradient(135deg, #FFD700, #D4AF37); }
-    </style>
-</head>
-<body class="bg-gray-50 min-h-screen">
-    <nav class="gold-gradient shadow-lg">
-        <div class="container mx-auto px-4">
-            <div class="flex justify-between items-center py-4">
-                <div class="flex items-center space-x-3">
-                    <i class="fas fa-coins text-2xl text-white"></i>
-                    <span class="text-xl font-bold text-white">GoldXAU Investment</span>
-                </div>
-                <div class="flex space-x-6 text-white">
-                    <a href="/dashboard" class="hover:text-yellow-200 transition">Dashboard</a>
-                    <a href="/verify_payment" class="hover:text-yellow-200 transition">Verify Payment</a>
-                    <a href="/gold_trading" class="hover:text-yellow-200 transition">Gold Trading</a>
-                    <a href="/transaction_history" class="hover:text-yellow-200 transition">History</a>
-                    <a href="/logout" class="hover:text-yellow-200 transition">Logout</a>
-                </div>
-            </div>
-        </div>
-    </nav>
+# Utility Functions
+def get_usdt_ngn_rate():
+    """
+    Get current USDT to NGN exchange rate from Binance
+    Fallback to fixed rate if API fails
+    """
+    try:
+        response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=USDTNGN", timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return float(data['price'])
+    except:
+        pass
+    
+    # Fallback rate
+    return 1500.0
 
-    <main class="container mx-auto px-4 py-8">
-        <div class="max-w-6xl mx-auto">
-            <h1 class="text-3xl font-bold mb-8">Transaction History</h1>
-            
-            <div class="bg-white rounded-lg shadow-lg overflow-hidden">
-                <div class="overflow-x-auto">
-                    <table class="w-full">
-                        <thead class="bg-gray-100">
-                            <tr>
-                                <th class="p-4 text-left">Date</th>
-                                <th class="p-4 text-left">Type</th>
-                                <th class="p-4 text-left">Amount</th>
-                                <th class="p-4 text-left">Gold</th>
-                                <th class="p-4 text-left">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for transaction in transactions %}
-                            <tr class="border-b hover:bg-gray-50">
-                                <td class="p-4">{{ transaction.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                                <td class="p-4">
-                                    <span class="px-2 py-1 rounded-full text-xs 
-                                        {% if transaction.type == 'deposit' %}bg-green-100 text-green-800
-                                        {% elif transaction.type == 'gold_purchase' %}bg-yellow-100 text-yellow-800
-                                        {% else %}bg-red-100 text-red-800{% endif %}">
-                                        {{ transaction.type|replace('_', ' ')|title }}
-                                    </span>
-                                </td>
-                                <td class="p-4">
-                                    {% if transaction.amount %}
-                                        ${{ "%.2f"|format(transaction.amount) }}
-                                    {% else %}
-                                        -
-                                    {% endif %}
-                                </td>
-                                <td class="p-4">
-                                    {% if transaction.gold_amount %}
-                                        {{ "%.3f"|format(transaction.gold_amount) }} oz
-                                    {% else %}
-                                        -
-                                    {% endif %}
-                                </td>
-                                <td class="p-4">
-                                    <span class="px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
-                                        {{ transaction.status }}
-                                    </span>
-                                </td>
-                            </tr>
-                            {% else %}
-                            <tr>
-                                <td colspan="5" class="p-8 text-center text-gray-500">
-                                    No transactions found.
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </main>
+def validate_tron_address(address):
+    """
+    Basic TRON address validation
+    """
+    if not address:
+        return False
+    
+    # TRON addresses start with T and are 34 characters long
+    pattern = r'^T[A-Za-z0-9]{33}$'
+    return bool(re.match(pattern, address))
 
-    <footer class="bg-gray-800 text-white mt-12">
-        <div class="container mx-auto px-4 py-8">
-            <div class="text-center">
-                <p>&copy; 2024 GoldXAU Investment. All rights reserved.</p>
-                <p class="text-gray-400 mt-2">Invest in Gold - Secure Your Future</p>
-            </div>
-        </div>
-    </footer>
-</body>
-</html>
-    '''
-}
+def send_usdt_tron(to_address, amount):
+    """
+    Send USDT on TRON network
+    Placeholder for TRON integration
+    """
+    return f"mock_tx_hash_{datetime.now().timestamp()}"
 
-# Routes
+# Database Functions
+def init_db():
+    """Initialize SQLite database"""
+    conn = sqlite3.connect('trading.db')
+    c = conn.cursor()
+    
+    # Users table
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  email TEXT UNIQUE,
+                  usdt_balance REAL DEFAULT 0,
+                  ngn_balance REAL DEFAULT 0,
+                  tron_address TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # Trades table
+    c.execute('''CREATE TABLE IF NOT EXISTS trades
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  asset TEXT,
+                  type TEXT,
+                  amount REAL,
+                  price REAL,
+                  total REAL,
+                  status TEXT DEFAULT 'completed',
+                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY(user_id) REFERENCES users(id))''')
+    
+    # Deposits table
+    c.execute('''CREATE TABLE IF NOT EXISTS deposits
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  amount REAL,
+                  tron_tx_hash TEXT UNIQUE,
+                  status TEXT DEFAULT 'pending',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  confirmed_at TIMESTAMP,
+                  FOREIGN KEY(user_id) REFERENCES users(id))''')
+    
+    # Withdrawals table
+    c.execute('''CREATE TABLE IF NOT EXISTS withdrawals
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER,
+                  amount REAL,
+                  tron_address TEXT,
+                  tx_hash TEXT,
+                  status TEXT DEFAULT 'pending',
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  completed_at TIMESTAMP,
+                  FOREIGN KEY(user_id) REFERENCES users(id))''')
+    
+    conn.commit()
+    conn.close()
+
+def get_db_connection():
+    conn = sqlite3.connect('trading.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def get_user_by_id(user_id):
+    conn = get_db_connection()
+    user = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
+    conn.close()
+    return user
+
+def get_user_by_email(email):
+    conn = get_db_connection()
+    user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
+    conn.close()
+    return user
+
+# Flask Routes
 @app.route('/')
 def index():
-    if 'user_id' in session:
-        return redirect(url_for('dashboard'))
-    return render_template_string(HTML_PAGES['index'])
+    return render_template_string(HTML_TEMPLATE)
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        email = request.form['email'].strip().lower()
-        full_name = request.form['full_name'].strip()
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    email = data.get('email')
+    
+    if not email:
+        return jsonify({'error': 'Email is required'}), 400
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO users (email) VALUES (?)', (email,))
+        user_id = cursor.lastrowid
+        conn.commit()
         
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            user = User(email=email, full_name=full_name)
-            db.session.add(user)
-            db.session.commit()
-            flash('Account created successfully!', 'success')
+        user = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
+        return jsonify({
+            'message': 'User registered successfully',
+            'user': dict(user)
+        }), 201
+    except sqlite3.IntegrityError:
+        return jsonify({'error': 'Email already exists'}), 400
+    finally:
+        conn.close()
+
+@app.route('/api/deposit', methods=['POST'])
+def create_deposit():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    amount = data.get('amount')
+    
+    if not all([user_id, amount]):
+        return jsonify({'error': 'User ID and amount are required'}), 400
+    
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    # Generate deposit address (in real implementation, this would be dynamic)
+    deposit_address = "TXYZ123456789012345678901234567890"
+    
+    return jsonify({
+        'message': 'Deposit address generated',
+        'deposit_address': deposit_address,
+        'amount': amount,
+        'currency': 'USDT'
+    }), 200
+
+@app.route('/api/webhook/deposit', methods=['POST'])
+def deposit_webhook():
+    """Webhook for TRON deposit notifications"""
+    data = request.get_json()
+    
+    tx_hash = data.get('tx_hash')
+    from_address = data.get('from_address')
+    to_address = data.get('to_address')
+    amount = data.get('amount')
+    
+    if not all([tx_hash, from_address, to_address, amount]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    conn = get_db_connection()
+    
+    # Find user (in real implementation, map addresses to users)
+    user = conn.execute('SELECT * FROM users LIMIT 1').fetchone()
+    
+    if user:
+        # Check if deposit already processed
+        existing = conn.execute('SELECT * FROM deposits WHERE tron_tx_hash = ?', (tx_hash,)).fetchone()
+        if not existing:
+            # Add deposit record
+            conn.execute('INSERT INTO deposits (user_id, amount, tron_tx_hash, status, confirmed_at) VALUES (?, ?, ?, ?, ?)',
+                        (user['id'], amount, tx_hash, 'confirmed', datetime.now()))
+            
+            # Update user balance
+            conn.execute('UPDATE users SET usdt_balance = usdt_balance + ? WHERE id = ?',
+                        (amount, user['id']))
+            
+            conn.commit()
+    
+    conn.close()
+    return jsonify({'message': 'Deposit processed'}), 200
+
+@app.route('/api/balance/<int:user_id>')
+def get_balance(user_id):
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    usdt_ngn_rate = get_usdt_ngn_rate()
+    total_ngn_value = user['usdt_balance'] * usdt_ngn_rate
+    
+    return jsonify({
+        'usdt_balance': user['usdt_balance'],
+        'ngn_balance': user['ngn_balance'],
+        'usdt_ngn_rate': usdt_ngn_rate,
+        'total_ngn_value': total_ngn_value
+    }), 200
+
+@app.route('/api/trade', methods=['POST'])
+def create_trade():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    trade_type = data.get('type')
+    amount = data.get('amount')
+    
+    if not all([user_id, trade_type, amount]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    usdt_ngn_rate = get_usdt_ngn_rate()
+    total_value = amount * usdt_ngn_rate
+    
+    conn = get_db_connection()
+    
+    try:
+        if trade_type == 'buy':
+            # User buys USDT with NGN
+            if user['ngn_balance'] < total_value:
+                return jsonify({'error': 'Insufficient NGN balance'}), 400
+            
+            conn.execute('UPDATE users SET ngn_balance = ngn_balance - ?, usdt_balance = usdt_balance + ? WHERE id = ?',
+                        (total_value, amount, user_id))
+            
+        elif trade_type == 'sell':
+            # User sells USDT for NGN
+            if user['usdt_balance'] < amount:
+                return jsonify({'error': 'Insufficient USDT balance'}), 400
+            
+            conn.execute('UPDATE users SET usdt_balance = usdt_balance - ?, ngn_balance = ngn_balance + ? WHERE id = ?',
+                        (amount, total_value, user_id))
+        
         else:
-            if user.full_name != full_name:
-                user.full_name = full_name
-                db.session.commit()
+            return jsonify({'error': 'Invalid trade type'}), 400
         
-        session['user_id'] = user.id
-        session['user_email'] = user.email
-        return redirect(url_for('dashboard'))
-    
-    return render_template_string(HTML_PAGES['login'])
+        # Record trade
+        conn.execute('INSERT INTO trades (user_id, asset, type, amount, price, total) VALUES (?, ?, ?, ?, ?, ?)',
+                    (user_id, 'USDT/NGN', trade_type, amount, usdt_ngn_rate, total_value))
+        
+        conn.commit()
+        
+        updated_user = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
+        
+        return jsonify({
+            'message': f'Trade {trade_type} executed successfully',
+            'trade': {
+                'type': trade_type,
+                'amount': amount,
+                'price': usdt_ngn_rate,
+                'total': total_value
+            },
+            'new_balance': dict(updated_user)
+        }), 200
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
 
-@app.route('/dashboard')
-def dashboard():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
+@app.route('/api/trades/<int:user_id>')
+def get_trades(user_id):
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
     
-    user = User.query.get(session['user_id'])
-    return render_template_string(HTML_PAGES['dashboard'], user=user)
+    conn = get_db_connection()
+    trades = conn.execute('''
+        SELECT * FROM trades 
+        WHERE user_id = ? 
+        ORDER BY timestamp DESC 
+        LIMIT 50
+    ''', (user_id,)).fetchall()
+    
+    conn.close()
+    
+    trades_list = [dict(trade) for trade in trades]
+    return jsonify({'trades': trades_list}), 200
 
-@app.route('/verify_payment', methods=['GET', 'POST'])
-def verify_payment():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
+@app.route('/api/withdraw', methods=['POST'])
+def create_withdrawal():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    amount = data.get('amount')
+    tron_address = data.get('tron_address')
     
-    user = User.query.get(session['user_id'])
+    if not all([user_id, amount, tron_address]):
+        return jsonify({'error': 'Missing required fields'}), 400
     
-    if request.method == 'POST':
-        receipt_text = request.form.get('receipt_text', '').strip()
-        
-        if not receipt_text:
-            flash('Please provide receipt text', 'error')
-            return redirect(url_for('verify_payment'))
-        
-        parser = ReceiptParser()
-        parsed_data = parser.parse_receipt_text(receipt_text)
-        
-        if not parsed_data:
-            flash('Could not parse receipt. Please check the format and try again.', 'error')
-            return redirect(url_for('verify_payment'))
-        
-        is_valid, message = parser.validate_receipt(parsed_data, user.full_name)
-        
-        if not is_valid:
-            flash(f'Validation failed: {message}', 'error')
-            return redirect(url_for('verify_payment'))
-        
-        existing_payment = PaymentReceipt.query.filter_by(
-            transaction_id=parsed_data['transaction_id']
-        ).first()
-        
-        if existing_payment:
-            flash('This payment has already been verified.', 'error')
-            return redirect(url_for('verify_payment'))
-        
-        payment = PaymentReceipt(
-            user_id=user.id,
-            amount=parsed_data['amount'],
-            sender_name=parsed_data['sender_name'],
-            recipient_name=parsed_data['recipient_name'],
-            transaction_id=parsed_data['transaction_id'],
-            session_id=parsed_data['session_id'],
-            timestamp=parsed_data['timestamp'] or datetime.utcnow(),
-            reference_text=parsed_data['reference_text'],
-            status='verified',
-            verified_at=datetime.utcnow()
-        )
-        
-        user.balance += parsed_data['amount']
-        
-        transaction = Transaction(
-            user_id=user.id,
-            type='deposit',
-            amount=parsed_data['amount'],
-            status='completed'
-        )
-        
-        db.session.add(payment)
-        db.session.add(transaction)
-        db.session.commit()
-        
-        flash(f'Payment verified successfully! ${parsed_data["amount"]:.2f} has been added to your account.', 'success')
-        return redirect(url_for('dashboard'))
+    if not validate_tron_address(tron_address):
+        return jsonify({'error': 'Invalid TRON address'}), 400
     
-    return render_template_string(HTML_PAGES['verify_payment'], user=user)
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    if user['usdt_balance'] < amount:
+        return jsonify({'error': 'Insufficient USDT balance'}), 400
+    
+    conn = get_db_connection()
+    
+    try:
+        # Create withdrawal record
+        conn.execute('INSERT INTO withdrawals (user_id, amount, tron_address, status) VALUES (?, ?, ?, ?)',
+                    (user_id, amount, tron_address, 'pending'))
+        
+        # Reserve balance
+        conn.execute('UPDATE users SET usdt_balance = usdt_balance - ? WHERE id = ?',
+                    (amount, user_id))
+        
+        conn.commit()
+        
+        # Simulate successful withdrawal
+        withdrawal_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        
+        return jsonify({
+            'message': 'Withdrawal request submitted',
+            'withdrawal_id': withdrawal_id,
+            'amount': amount,
+            'address': tron_address,
+            'status': 'pending'
+        }), 200
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
 
-@app.route('/gold_trading')
-def gold_trading():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
+@app.route('/api/withdrawals/<int:user_id>')
+def get_withdrawals(user_id):
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
     
-    user = User.query.get(session['user_id'])
-    return render_template_string(HTML_PAGES['gold_trading'], user=user)
+    conn = get_db_connection()
+    withdrawals = conn.execute('''
+        SELECT * FROM withdrawals 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC 
+        LIMIT 50
+    ''', (user_id,)).fetchall()
+    
+    conn.close()
+    
+    withdrawals_list = [dict(withdrawal) for withdrawal in withdrawals]
+    return jsonify({'withdrawals': withdrawals_list}), 200
 
-@app.route('/buy_gold', methods=['POST'])
-def buy_gold():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    
-    user = User.query.get(session['user_id'])
-    amount = float(request.form['amount'])
-    
-    if amount > user.balance:
-        flash('Insufficient balance', 'error')
-        return redirect(url_for('gold_trading'))
-    
-    gold_service = GoldAPIService()
-    gold_price = gold_service.get_gold_price()
-    
-    gold_amount = amount / gold_price
-    
-    user.balance -= amount
-    user.gold_balance += gold_amount
-    
-    transaction = Transaction(
-        user_id=user.id,
-        type='gold_purchase',
-        amount=amount,
-        gold_amount=gold_amount,
-        gold_price=gold_price,
-        status='completed'
-    )
-    
-    gold_price_record = GoldPrice(price=gold_price)
-    
-    db.session.add(transaction)
-    db.session.add(gold_price_record)
-    db.session.commit()
-    
-    flash(f'Successfully purchased {gold_amount:.3f} oz of gold!', 'success')
-    return redirect(url_for('gold_trading'))
+@app.route('/api/rates')
+def get_rates():
+    usdt_ngn_rate = get_usdt_ngn_rate()
+    return jsonify({
+        'USDT_NGN': usdt_ngn_rate,
+        'timestamp': datetime.now().isoformat()
+    }), 200
 
-@app.route('/sell_gold', methods=['POST'])
-def sell_gold():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
+@app.route('/api/deposits/<int:user_id>')
+def get_deposits(user_id):
+    user = get_user_by_id(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
     
-    user = User.query.get(session['user_id'])
-    gold_amount = float(request.form['gold_amount'])
+    conn = get_db_connection()
+    deposits = conn.execute('''
+        SELECT * FROM deposits 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC 
+        LIMIT 50
+    ''', (user_id,)).fetchall()
     
-    if gold_amount > user.gold_balance:
-        flash('Insufficient gold balance', 'error')
-        return redirect(url_for('gold_trading'))
+    conn.close()
     
-    gold_service = GoldAPIService()
-    gold_price = gold_service.get_gold_price()
-    
-    usd_amount = gold_amount * gold_price
-    
-    user.balance += usd_amount
-    user.gold_balance -= gold_amount
-    
-    transaction = Transaction(
-        user_id=user.id,
-        type='gold_sale',
-        amount=usd_amount,
-        gold_amount=gold_amount,
-        gold_price=gold_price,
-        status='completed'
-    )
-    
-    gold_price_record = GoldPrice(price=gold_price)
-    
-    db.session.add(transaction)
-    db.session.add(gold_price_record)
-    db.session.commit()
-    
-    flash(f'Successfully sold {gold_amount:.3f} oz of gold for ${usd_amount:.2f}!', 'success')
-    return redirect(url_for('gold_trading'))
+    deposits_list = [dict(deposit) for deposit in deposits]
+    return jsonify({'deposits': deposits_list}), 200
 
-@app.route('/transaction_history')
-def transaction_history():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    
-    user = User.query.get(session['user_id'])
-    transactions = Transaction.query.filter_by(user_id=user.id).order_by(Transaction.created_at.desc()).all()
-    
-    return render_template_string(HTML_PAGES['transaction_history'], 
-                                user=user, 
-                                transactions=transactions)
-
-@app.route('/api/gold_price')
-def api_gold_price():
-    gold_service = GoldAPIService()
-    price = gold_service.get_gold_price()
-    return jsonify({'price': price, 'timestamp': datetime.utcnow().isoformat()})
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    flash('Logged out successfully!', 'success')
-    return redirect(url_for('index'))
-
-# Initialize database
-with app.app_context():
-    db.create_all()
-
+# Initialize database on startup
 if __name__ == '__main__':
+    init_db()
+    print("Naira Trading Platform starting...")
+    print("Access the platform at: http://localhost:5000")
+    print("Features available:")
+    print("✅ User registration and authentication")
+    print("✅ USDT/NGN trading")
+    print("✅ TRON USDT deposits (with webhook)")
+    print("✅ USDT withdrawals")
+    print("✅ Real-time balance tracking")
+    print("✅ Mobile-friendly interface")
     app.run(debug=True, host='0.0.0.0', port=5000)

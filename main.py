@@ -1,515 +1,408 @@
-from flask import Flask, render_template_string, request, jsonify
-import cv2
-import pytesseract
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
 import numpy as np
-import re
-import json
-import os
-from werkzeug.utils import secure_filename
-import logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Page configuration
+st.set_page_config(
+    page_title="Power Bank Investment Dashboard",
+    page_icon="🔋",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-app = Flask(__name__)
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #1f77b4;
+    }
+    .profit-positive {
+        color: #00ff00;
+        font-weight: bold;
+    }
+    .profit-negative {
+        color: #ff0000;
+        font-weight: bold;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Railway provides PORT environment variable
-port = int(os.environ.get("PORT", 5000))
-
-# Configuration
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-
-# Use /tmp for uploads on Railway since it's ephemeral
-UPLOAD_FOLDER = '/tmp/uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-class ReceiptExtractor:
+class PowerBankInvestmentDashboard:
     def __init__(self):
-        # Set Tesseract path for Railway environment
-        try:
-            # Try common Tesseract paths
-            possible_paths = [
-                '/usr/bin/tesseract',
-                '/usr/local/bin/tesseract',
-                '/app/.apt/usr/bin/tesseract'
+        self.df = self.generate_sample_data()
+    
+    def generate_sample_data(self):
+        """Generate sample power bank investment data"""
+        np.random.seed(42)
+        
+        dates = pd.date_range(start='2023-01-01', end='2024-01-01', freq='D')
+        brands = ['Anker', 'Xiaomi', 'Samsung', 'RAVPower', 'Baseus', 'AUKEY']
+        locations = ['Mall Kiosk', 'Airport', 'University', 'Coffee Shop', 'Co-working Space']
+        
+        data = []
+        for date in dates:
+            for brand in brands:
+                for location in locations:
+                    units = np.random.randint(1, 10)
+                    cost_per_unit = np.random.uniform(20, 100)
+                    revenue_per_unit = cost_per_unit * np.random.uniform(1.1, 2.0)
+                    
+                    data.append({
+                        'date': date,
+                        'brand': brand,
+                        'location': location,
+                        'units_invested': units,
+                        'cost_per_unit': cost_per_unit,
+                        'revenue_per_unit': revenue_per_unit,
+                        'total_cost': units * cost_per_unit,
+                        'total_revenue': units * revenue_per_unit
+                    })
+        
+        df = pd.DataFrame(data)
+        df['profit'] = df['total_revenue'] - df['total_cost']
+        df['roi'] = (df['profit'] / df['total_cost']) * 100
+        return df
+    
+    def display_header(self):
+        """Display dashboard header"""
+        st.markdown('<h1 class="main-header">🔋 Power Bank Investment Dashboard</h1>', 
+                   unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.write("Track and analyze your power bank rental investments")
+    
+    def display_kpis(self):
+        """Display Key Performance Indicators"""
+        st.subheader("📊 Key Performance Indicators")
+        
+        total_investment = self.df['total_cost'].sum()
+        total_revenue = self.df['total_revenue'].sum()
+        total_profit = self.df['profit'].sum()
+        avg_roi = self.df['roi'].mean()
+        total_units = self.df['units_invested'].sum()
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric(
+                label="Total Investment",
+                value=f"${total_investment:,.0f}",
+                delta=None
+            )
+        
+        with col2:
+            st.metric(
+                label="Total Revenue",
+                value=f"${total_revenue:,.0f}",
+                delta=f"${total_profit:,.0f}"
+            )
+        
+        with col3:
+            profit_class = "profit-positive" if total_profit >= 0 else "profit-negative"
+            st.markdown(f"""
+            <div class="metric-card">
+                <h3>Total Profit</h3>
+                <h2 class="{profit_class}">${total_profit:,.0f}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            st.metric(
+                label="Average ROI",
+                value=f"{avg_roi:.1f}%",
+                delta=None
+            )
+        
+        with col5:
+            st.metric(
+                label="Total Units",
+                value=f"{total_units:,.0f}",
+                delta=None
+            )
+    
+    def display_filters(self):
+        """Display filters in sidebar"""
+        st.sidebar.header("🔍 Filters")
+        
+        # Date range filter
+        min_date = self.df['date'].min().date()
+        max_date = self.df['date'].max().date()
+        
+        date_range = st.sidebar.date_input(
+            "Date Range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date
+        )
+        
+        # Brand filter
+        brands = st.sidebar.multiselect(
+            "Brands",
+            options=self.df['brand'].unique(),
+            default=self.df['brand'].unique()
+        )
+        
+        # Location filter
+        locations = st.sidebar.multiselect(
+            "Locations",
+            options=self.df['location'].unique(),
+            default=self.df['location'].unique()
+        )
+        
+        # Apply filters
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            filtered_df = self.df[
+                (self.df['date'].dt.date >= start_date) & 
+                (self.df['date'].dt.date <= end_date) &
+                (self.df['brand'].isin(brands)) &
+                (self.df['location'].isin(locations))
             ]
-            for path in possible_paths:
-                if os.path.exists(path):
-                    pytesseract.pytesseract.tesseract_cmd = path
-                    logger.info(f"Tesseract found at: {path}")
-                    break
-            else:
-                logger.warning("Tesseract not found in common paths, using system PATH")
-        except Exception as e:
-            logger.error(f"Error setting Tesseract path: {e}")
-    
-    def preprocess_image(self, image_path):
-        """Preprocess the image for better OCR results"""
-        try:
-            img = cv2.imread(image_path)
-            if img is None:
-                raise ValueError("Could not read image file")
-                
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            denoised = cv2.medianBlur(gray, 5)
-            _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            return thresh
-        except Exception as e:
-            logger.error(f"Error preprocessing image: {e}")
-            raise
-    
-    def extract_text(self, image_path):
-        """Extract all text from receipt image"""
-        try:
-            processed_img = self.preprocess_image(image_path)
-            custom_config = r'--oem 3 --psm 6'
-            text = pytesseract.image_to_string(processed_img, config=custom_config)
-            return text
-        except Exception as e:
-            logger.error(f"Error extracting text: {e}")
-            return ""
-    
-    def parse_receipt_data(self, text):
-        """Parse extracted text to structured data"""
-        try:
-            lines = text.split('\n')
-            receipt_data = {
-                'store_name': '',
-                'date': '',
-                'time': '',
-                'items': [],
-                'subtotal': '',
-                'tax': '',
-                'total': '',
-                'payment_method': ''
-            }
-            
-            date_pattern = r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}'
-            time_pattern = r'\d{1,2}:\d{2}\s*(?:AM|PM)?'
-            currency_pattern = r'[$€£]?\s*\d+\.\d{2}'
-            
-            for i, line in enumerate(lines):
-                line = line.strip()
-                if not line:
-                    continue
-                
-                if not receipt_data['store_name'] and len(line) > 3:
-                    receipt_data['store_name'] = line
-                
-                date_match = re.search(date_pattern, line)
-                if date_match and not receipt_data['date']:
-                    receipt_data['date'] = date_match.group()
-                
-                time_match = re.search(time_pattern, line, re.IGNORECASE)
-                if time_match and not receipt_data['time']:
-                    receipt_data['time'] = time_match.group()
-                
-                if re.search(r'TOTAL|AMOUNT DUE|GRAND TOTAL', line, re.IGNORECASE):
-                    currency_match = re.search(currency_pattern, line)
-                    if currency_match:
-                        receipt_data['total'] = currency_match.group()
-                
-                if re.search(r'SUBTOTAL|SUB-TOTAL', line, re.IGNORECASE):
-                    currency_match = re.search(currency_pattern, line)
-                    if currency_match:
-                        receipt_data['subtotal'] = currency_match.group()
-                
-                if re.search(r'TAX|VAT|GST', line, re.IGNORECASE):
-                    currency_match = re.search(currency_pattern, line)
-                    if currency_match:
-                        receipt_data['tax'] = currency_match.group()
-                
-                if re.search(r'CASH|CARD|CREDIT|DEBIT|VISA|MASTERCARD', line, re.IGNORECASE):
-                    receipt_data['payment_method'] = line
-                
-                if re.search(currency_pattern, line) and len(line) > 5:
-                    item_parts = re.split(r'\s{2,}', line)
-                    if len(item_parts) >= 2:
-                        item_name = item_parts[0].strip()
-                        price_match = re.search(currency_pattern, line)
-                        if price_match and len(item_name) > 1:
-                            receipt_data['items'].append({
-                                'name': item_name,
-                                'price': price_match.group()
-                            })
-            
-            return receipt_data
-        except Exception as e:
-            logger.error(f"Error parsing receipt data: {e}")
-            return {
-                'store_name': '',
-                'date': '',
-                'time': '',
-                'items': [],
-                'subtotal': '',
-                'tax': '',
-                'total': '',
-                'payment_method': ''
-            }
-    
-    def process_receipt(self, image_path):
-        """Main method to process receipt and return structured data"""
-        try:
-            text = self.extract_text(image_path)
-            structured_data = self.parse_receipt_data(text)
-            
-            return {
-                'success': True,
-                'raw_text': text,
-                'structured_data': structured_data
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing receipt: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'raw_text': '',
-                'structured_data': {}
-            }
-
-# Initialize extractor
-extractor = ReceiptExtractor()
-
-# HTML Template as a string (to avoid template folder issues)
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Receipt Text Extractor</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-            min-height: 100vh; padding: 20px; 
-        }
-        .container { 
-            max-width: 1200px; margin: 0 auto; background: white; 
-            border-radius: 15px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); 
-            overflow: hidden; 
-        }
-        .header { 
-            background: linear-gradient(135deg, #2c3e50, #34495e); 
-            color: white; padding: 30px; text-align: center; 
-        }
-        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
-        .header p { font-size: 1.2em; opacity: 0.9; }
-        .content { 
-            display: grid; grid-template-columns: 1fr 1fr; gap: 30px; 
-            padding: 40px; 
-        }
-        @media (max-width: 768px) { .content { grid-template-columns: 1fr; } }
-        .upload-section { 
-            background: #f8f9fa; padding: 30px; border-radius: 10px; 
-            border: 2px dashed #dee2e6; 
-        }
-        .upload-area { 
-            text-align: center; padding: 40px 20px; border: 2px dashed #667eea; 
-            border-radius: 10px; background: #f8f9ff; cursor: pointer; 
-            transition: all 0.3s ease; 
-        }
-        .upload-area:hover { background: #eef2ff; border-color: #5a67d8; }
-        .upload-icon { font-size: 3em; color: #667eea; margin-bottom: 15px; }
-        .file-input { display: none; }
-        .upload-btn { 
-            background: linear-gradient(135deg, #667eea, #764ba2); 
-            color: white; border: none; padding: 12px 30px; border-radius: 25px; 
-            font-size: 1.1em; cursor: pointer; transition: transform 0.2s ease; 
-            margin-top: 15px; 
-        }
-        .upload-btn:hover { transform: translateY(-2px); }
-        .upload-btn:disabled { background: #6c757d; cursor: not-allowed; transform: none; }
-        .results-section { 
-            background: white; padding: 30px; border-radius: 10px; 
-            border: 1px solid #e9ecef; 
-        }
-        .results-container { max-height: 500px; overflow-y: auto; }
-        .result-item { 
-            margin-bottom: 20px; padding: 15px; background: #f8f9fa; 
-            border-radius: 8px; border-left: 4px solid #667eea; 
-        }
-        .result-item h3 { color: #2c3e50; margin-bottom: 10px; font-size: 1.1em; }
-        .items-list { list-style: none; }
-        .items-list li { 
-            padding: 8px; border-bottom: 1px solid #dee2e6; 
-            display: flex; justify-content: space-between; 
-        }
-        .items-list li:last-child { border-bottom: none; }
-        .loading { display: none; text-align: center; padding: 20px; }
-        .spinner { 
-            border: 4px solid #f3f3f3; border-top: 4px solid #667eea; 
-            border-radius: 50%; width: 40px; height: 40px; 
-            animation: spin 1s linear infinite; margin: 0 auto 15px; 
-        }
-        @keyframes spin { 
-            0% { transform: rotate(0deg); } 
-            100% { transform: rotate(360deg); } 
-        }
-        .error { 
-            background: #fee; color: #c53030; padding: 15px; border-radius: 8px; 
-            border-left: 4px solid #c53030; margin-top: 15px; 
-        }
-        .success { 
-            background: #f0fff4; color: #2f855a; padding: 15px; border-radius: 8px; 
-            border-left: 4px solid #2f855a; margin-top: 15px; 
-        }
-        .raw-text { 
-            background: #2d3748; color: #e2e8f0; padding: 15px; border-radius: 8px; 
-            font-family: 'Courier New', monospace; white-space: pre-wrap; 
-            font-size: 0.9em; max-height: 200px; overflow-y: auto; 
-        }
-        .file-info { margin-top: 10px; font-size: 0.9em; color: #6c757d; }
-        .preview-image { 
-            max-width: 100%; max-height: 200px; border-radius: 8px; 
-            margin-top: 15px; display: none; 
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🧾 Receipt Text Extractor</h1>
-            <p>Upload a receipt image to extract and verify text information</p>
-        </div>
+        else:
+            filtered_df = self.df
         
-        <div class="content">
-            <div class="upload-section">
-                <h2>Upload Receipt</h2>
-                <p>Supported formats: JPG, PNG, JPEG</p>
-                
-                <div class="upload-area" onclick="document.getElementById('fileInput').click()">
-                    <div class="upload-icon">📁</div>
-                    <h3>Click to upload receipt</h3>
-                    <p>or drag and drop your file here</p>
-                    <input type="file" id="fileInput" class="file-input" accept=".jpg,.jpeg,.png" onchange="handleFileSelect(event)">
-                </div>
-                
-                <div id="fileInfo" class="file-info"></div>
-                <img id="previewImage" class="preview-image" alt="Preview">
-                
-                <button id="uploadBtn" class="upload-btn" onclick="uploadFile()" disabled>
-                    Process Receipt
-                </button>
-                
-                <div class="loading" id="loading">
-                    <div class="spinner"></div>
-                    <p>Processing receipt... This may take a few seconds.</p>
-                </div>
-            </div>
-            
-            <div class="results-section">
-                <h2>Extracted Information</h2>
-                <div id="resultsContainer" class="results-container">
-                    <div id="initialMessage">
-                        <p>Upload a receipt to see extracted information here.</p>
-                    </div>
-                    <div id="resultsContent" style="display: none;"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let selectedFile = null;
-        let filePreviewUrl = null;
-
-        function handleFileSelect(event) {
-            const file = event.target.files[0];
-            if (file) {
-                selectedFile = file;
-                
-                document.getElementById('fileInfo').textContent = 
-                    `Selected: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
-                
-                document.getElementById('uploadBtn').disabled = false;
-                
-                const previewImage = document.getElementById('previewImage');
-                if (file.type.startsWith('image/')) {
-                    if (filePreviewUrl) {
-                        URL.revokeObjectURL(filePreviewUrl);
-                    }
-                    filePreviewUrl = URL.createObjectURL(file);
-                    previewImage.src = filePreviewUrl;
-                    previewImage.style.display = 'block';
-                }
-            }
-        }
-
-        function uploadFile() {
-            if (!selectedFile) return;
-            
-            const loadingElement = document.getElementById('loading');
-            const uploadBtn = document.getElementById('uploadBtn');
-            const resultsContent = document.getElementById('resultsContent');
-            const initialMessage = document.getElementById('initialMessage');
-            
-            loadingElement.style.display = 'block';
-            uploadBtn.disabled = true;
-            
-            const formData = new FormData();
-            formData.append('file', selectedFile);
-            
-            fetch('/upload', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                loadingElement.style.display = 'none';
-                uploadBtn.disabled = false;
-                
-                if (data.success) {
-                    displayResults(data);
-                    initialMessage.style.display = 'none';
-                    resultsContent.style.display = 'block';
-                } else {
-                    showError(data.error);
-                }
-            })
-            .catch(error => {
-                loadingElement.style.display = 'none';
-                uploadBtn.disabled = false;
-                showError('Network error: ' + error.message);
-            });
-        }
-
-        function displayResults(data) {
-            const resultsContent = document.getElementById('resultsContent');
-            const structured = data.structured_data;
-            
-            let html = `
-                <div class="success">
-                    ✅ Successfully extracted receipt information
-                </div>
-                
-                <div class="result-item">
-                    <h3>🏪 Store Information</h3>
-                    <p><strong>Store Name:</strong> ${structured.store_name || 'Not found'}</p>
-                    <p><strong>Date:</strong> ${structured.date || 'Not found'}</p>
-                    <p><strong>Time:</strong> ${structured.time || 'Not found'}</p>
-                </div>`;
-            
-            if (structured.items && structured.items.length > 0) {
-                html += `
-                <div class="result-item">
-                    <h3>🛒 Purchased Items</h3>
-                    <ul class="items-list">`;
-                
-                structured.items.forEach(item => {
-                    html += `<li><span>${item.name}</span><span>${item.price}</span></li>`;
-                });
-                
-                html += `</ul></div>`;
-            }
-            
-            html += `
-                <div class="result-item">
-                    <h3>💰 Payment Details</h3>
-                    <p><strong>Subtotal:</strong> ${structured.subtotal || 'Not found'}</p>
-                    <p><strong>Tax:</strong> ${structured.tax || 'Not found'}</p>
-                    <p><strong>Total:</strong> ${structured.total || 'Not found'}</p>
-                    <p><strong>Payment Method:</strong> ${structured.payment_method || 'Not found'}</p>
-                </div>
-                
-                <div class="result-item">
-                    <h3>📝 Raw Extracted Text</h3>
-                    <div class="raw-text">${data.raw_text || 'No text extracted'}</div>
-                </div>`;
-            
-            resultsContent.innerHTML = html;
-        }
-
-        function showError(message) {
-            const resultsContent = document.getElementById('resultsContent');
-            const initialMessage = document.getElementById('initialMessage');
-            
-            initialMessage.style.display = 'none';
-            resultsContent.style.display = 'block';
-            resultsContent.innerHTML = `
-                <div class="error">
-                    ❌ Error: ${message}
-                </div>
-            `;
-        }
-
-        // Drag and drop functionality
-        document.addEventListener('DOMContentLoaded', function() {
-            const uploadArea = document.querySelector('.upload-area');
-            
-            uploadArea.addEventListener('dragover', function(e) {
-                e.preventDefault();
-                uploadArea.style.background = '#eef2ff';
-                uploadArea.style.borderColor = '#5a67d8';
-            });
-            
-            uploadArea.addEventListener('dragleave', function(e) {
-                e.preventDefault();
-                uploadArea.style.background = '#f8f9ff';
-                uploadArea.style.borderColor = '#667eea';
-            });
-            
-            uploadArea.addEventListener('drop', function(e) {
-                e.preventDefault();
-                uploadArea.style.background = '#f8f9ff';
-                uploadArea.style.borderColor = '#667eea';
-                
-                const files = e.dataTransfer.files;
-                if (files.length > 0) {
-                    const fileInput = document.getElementById('fileInput');
-                    fileInput.files = files;
-                    handleFileSelect({target: {files: files}});
-                }
-            });
-        });
-    </script>
-</body>
-</html>
-'''
-
-@app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'error': 'No file uploaded'})
+        return filtered_df
     
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'error': 'No file selected'})
-    
-    if file:
-        allowed_extensions = {'jpg', 'jpeg', 'png'}
-        if '.' in file.filename and file.filename.rsplit('.', 1)[1].lower() not in allowed_extensions:
-            return jsonify({'success': False, 'error': 'Invalid file type. Please upload JPG, JPEG, or PNG images.'})
+    def display_profit_trend(self, filtered_df):
+        """Display profit trend over time"""
+        st.subheader("📈 Profit Trend Over Time")
         
-        try:
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(UPLOAD_FOLDER, filename)
-            file.save(filepath)
+        # Aggregate data by month
+        monthly_data = filtered_df.groupby(pd.Grouper(key='date', freq='M')).agg({
+            'total_cost': 'sum',
+            'total_revenue': 'sum',
+            'profit': 'sum',
+            'units_invested': 'sum'
+        }).reset_index()
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=monthly_data['date'],
+            y=monthly_data['profit'],
+            mode='lines+markers',
+            name='Profit',
+            line=dict(color='#1f77b4', width=3),
+            marker=dict(size=8)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=monthly_data['date'],
+            y=monthly_data['total_revenue'],
+            mode='lines',
+            name='Revenue',
+            line=dict(color='#2ca02c', width=2, dash='dash')
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=monthly_data['date'],
+            y=monthly_data['total_cost'],
+            mode='lines',
+            name='Cost',
+            line=dict(color='#ff7f0e', width=2, dash='dash')
+        ))
+        
+        fig.update_layout(
+            title='Monthly Profit, Revenue, and Cost Trends',
+            xaxis_title='Date',
+            yaxis_title='Amount ($)',
+            hovermode='x unified',
+            height=400
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    def display_brand_performance(self, filtered_df):
+        """Display brand performance comparison"""
+        st.subheader("🏷️ Brand Performance")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # ROI by brand
+            brand_roi = filtered_df.groupby('brand').agg({
+                'roi': 'mean',
+                'profit': 'sum',
+                'units_invested': 'sum'
+            }).reset_index()
             
-            result = extractor.process_receipt(filepath)
+            fig_roi = px.bar(
+                brand_roi,
+                x='brand',
+                y='roi',
+                title='Average ROI by Brand',
+                color='roi',
+                color_continuous_scale='Viridis'
+            )
+            fig_roi.update_layout(height=400)
+            st.plotly_chart(fig_roi, use_container_width=True)
+        
+        with col2:
+            # Profit by brand
+            fig_profit = px.pie(
+                filtered_df.groupby('brand')['profit'].sum().reset_index(),
+                values='profit',
+                names='brand',
+                title='Profit Distribution by Brand',
+                hole=0.4
+            )
+            fig_profit.update_layout(height=400)
+            st.plotly_chart(fig_profit, use_container_width=True)
+    
+    def display_location_analysis(self, filtered_df):
+        """Display location performance analysis"""
+        st.subheader("📍 Location Performance")
+        
+        location_performance = filtered_df.groupby('location').agg({
+            'profit': 'sum',
+            'roi': 'mean',
+            'units_invested': 'sum'
+        }).reset_index()
+        
+        fig = px.scatter(
+            location_performance,
+            x='units_invested',
+            y='profit',
+            size='roi',
+            color='location',
+            title='Location Performance: Units vs Profit (Size = ROI)',
+            hover_data=['roi']
+        )
+        fig.update_layout(height=500)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    def display_investment_details(self, filtered_df):
+        """Display detailed investment table"""
+        st.subheader("📋 Investment Details")
+        
+        # Show aggregated data
+        summary_df = filtered_df.groupby(['brand', 'location']).agg({
+            'units_invested': 'sum',
+            'total_cost': 'sum',
+            'total_revenue': 'sum',
+            'profit': 'sum',
+            'roi': 'mean'
+        }).reset_index()
+        
+        # Format numbers
+        summary_df['total_cost'] = summary_df['total_cost'].round(2)
+        summary_df['total_revenue'] = summary_df['total_revenue'].round(2)
+        summary_df['profit'] = summary_df['profit'].round(2)
+        summary_df['roi'] = summary_df['roi'].round(2)
+        
+        st.dataframe(
+            summary_df,
+            use_container_width=True,
+            column_config={
+                'units_invested': st.column_config.NumberColumn('Units'),
+                'total_cost': st.column_config.NumberColumn('Cost', format='$%.2f'),
+                'total_revenue': st.column_config.NumberColumn('Revenue', format='$%.2f'),
+                'profit': st.column_config.NumberColumn('Profit', format='$%.2f'),
+                'roi': st.column_config.NumberColumn('ROI', format='%.2f%%')
+            }
+        )
+    
+    def display_forecasting(self, filtered_df):
+        """Display simple forecasting"""
+        st.subheader("🔮 Revenue Forecasting")
+        
+        # Simple linear forecast based on last 3 months
+        recent_data = filtered_df.groupby(pd.Grouper(key='date', freq='M'))['total_revenue'].sum().tail(3)
+        
+        if len(recent_data) >= 2:
+            # Simple linear projection
+            x = np.arange(len(recent_data))
+            y = recent_data.values
+            slope = (y[-1] - y[0]) / (x[-1] - x[0]) if (x[-1] - x[0]) != 0 else 0
             
-            # Clean up
-            try:
-                os.remove(filepath)
-            except:
-                pass
+            future_months = 6
+            forecast_dates = pd.date_range(
+                start=recent_data.index[-1] + pd.DateOffset(months=1),
+                periods=future_months,
+                freq='M'
+            )
             
-            return jsonify(result)
+            forecast_values = [recent_data.iloc[-1] + slope * (i + 1) for i in range(future_months)]
             
-        except Exception as e:
-            logger.error(f"Upload error: {e}")
-            return jsonify({'success': False, 'error': f'Processing error: {str(e)}'})
+            fig = go.Figure()
+            
+            # Historical data
+            fig.add_trace(go.Scatter(
+                x=recent_data.index,
+                y=recent_data.values,
+                mode='lines+markers',
+                name='Historical Revenue',
+                line=dict(color='#1f77b4', width=3)
+            ))
+            
+            # Forecast data
+            fig.add_trace(go.Scatter(
+                x=forecast_dates,
+                y=forecast_values,
+                mode='lines+markers',
+                name='Forecasted Revenue',
+                line=dict(color='#ff7f0e', width=3, dash='dash')
+            ))
+            
+            fig.update_layout(
+                title='6-Month Revenue Forecast',
+                xaxis_title='Date',
+                yaxis_title='Revenue ($)',
+                height=400
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Not enough data for forecasting. Need at least 2 months of data.")
+    
+    def run(self):
+        """Run the dashboard"""
+        self.display_header()
+        
+        # Get filtered data
+        filtered_df = self.display_filters()
+        
+        # Display KPIs
+        self.display_kpis()
+        
+        # Display charts in tabs
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "📈 Trends", 
+            "🏷️ Brands", 
+            "📍 Locations", 
+            "📋 Details", 
+            "🔮 Forecast"
+        ])
+        
+        with tab1:
+            self.display_profit_trend(filtered_df)
+        
+        with tab2:
+            self.display_brand_performance(filtered_df)
+        
+        with tab3:
+            self.display_location_analysis(filtered_df)
+        
+        with tab4:
+            self.display_investment_details(filtered_df)
+        
+        with tab5:
+            self.display_forecasting(filtered_df)
 
-@app.route('/health')
-def health_check():
-    return jsonify({'status': 'healthy', 'message': 'Receipt extractor is running'})
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=port, debug=False)
+# Run the dashboard
+if __name__ == "__main__":
+    dashboard = PowerBankInvestmentDashboard()
+    dashboard.run()
